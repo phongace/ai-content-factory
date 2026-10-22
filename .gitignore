@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# secrets: never commit
+.env
+.env.local
+.env.*.local
+
+# generated media, local state, YouTube token, MPT runtime config
+data/
+tests/.fixtures/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
