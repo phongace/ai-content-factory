@@ -3,12 +3,21 @@
 ## 1. Cài đặt (1 lần)
 
 ```bash
-brew install ffmpeg uv            # macOS, ffmpeg Homebrew đã có libass (cần cho phụ đề)
+brew install uv                   # macOS
 git checkout feature/poc-video-factory-v1
 uv sync                           # tạo .venv, cài mpt==1.3.8 + deps (lần đầu vài phút)
-cp .env.example .env.local
+cp .env.example .env.local        # điền FFMPEG_PATH / FFPROBE_PATH nếu cần (xem bên dưới)
 uv run factory preflight          # phải ra "problems": []
 ```
+
+**FFmpeg phải có libass** (filter `ass`, dùng để burn phụ đề). `brew install ffmpeg` (Homebrew core) **có thể không có libass**
+(ví dụ ffmpeg 9.0.2 trên máy dev thiếu `ass`/`subtitles`). Kiểm tra: `ffmpeg -hide_banner -filters | grep ' ass '`, không ra dòng nào là thiếu.
+Nếu thiếu, cài bản có libass rồi trỏ `.env.local` tới đúng binary:
+
+- Static build cho macOS (ví dụ https://ffmpeg.martin-riedl.de), hoặc `brew install ffmpeg-full` (keg-only, binary nằm ở `$(brew --prefix ffmpeg-full)/bin`).
+- `FFMPEG_PATH=/đường/dẫn/ffmpeg` và `FFPROBE_PATH=/đường/dẫn/ffprobe` trong `.env.local`. Cả code của mình lẫn MoneyPrinterTurbo (scene render) đều dùng đúng cặp binary này.
+- `uv run factory preflight` báo rõ binary nào thiếu `ass`; `render` cũng tự kiểm tra trước khi chạy và báo lỗi tương tự.
+- Test render (`pytest -m media`) không đọc `.env.local`: export `FFMPEG_PATH`/`FFPROBE_PATH` trong shell, hoặc chạy `scripts/check.sh` (script tự lấy hai biến này từ `.env.local`). Không có ffmpeg đủ libass thì test render bị skip kèm lý do.
 
 ## 2. Env
 

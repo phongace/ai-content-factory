@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import mpt_bridge
 from .config import get_settings
 
 
@@ -117,8 +120,9 @@ def image_to_clip(image: str | Path, dst: str | Path, seconds: float = 6.0) -> N
 
 
 def preflight() -> dict:
-    """Check binaries and the filters/encoders the POC needs."""
+    """Check binaries and the filters/encoders the POC needs, for the ffmpeg MPT will actually run."""
     s = get_settings()
+    mpt_bridge.use_configured_ffmpeg()
     result: dict = {
         "ffmpeg": False,
         "ffprobe": False,
@@ -128,8 +132,14 @@ def preflight() -> dict:
         "sidechaincompress": False,
         "loudnorm": False,
         "version": None,
+        "ffmpeg_path": shutil.which(s.ffmpeg),
+        "ffprobe_path": shutil.which(s.ffprobe),
+        "mpt_ffmpeg_path": None,
+        "mpt_ffprobe_path": None,
         "problems": [],
     }
+    mpt_paths = mpt_bridge.mpt_tool_paths()
+    result["mpt_ffmpeg_path"], result["mpt_ffprobe_path"] = mpt_paths["ffmpeg"], mpt_paths["ffprobe"]
     try:
         v = subprocess.run([s.ffmpeg, "-version"], capture_output=True, text=True, timeout=20)
         result["ffmpeg"] = v.returncode == 0
@@ -144,9 +154,37 @@ def preflight() -> dict:
         pass
     with contextlib.suppress(FileNotFoundError):
         result["ffprobe"] = subprocess.run([s.ffprobe, "-version"], capture_output=True, timeout=20).returncode == 0
-    for key in ("ffmpeg", "ffprobe", "libx264", "aac", "ass", "sidechaincompress", "loudnorm"):
+    for key in ("ffmpeg", "ffprobe", "libx264", "aac", "sidechaincompress", "loudnorm"):
         if not result[key]:
             result["problems"].append(f"missing: {key}")
+    if result["ffmpeg"] and not result["ass"]:
+        result["problems"].append(
+            f"ffmpeg at {result['ffmpeg_path'] or s.ffmpeg} lacks libass (ass filter); "
+            "install a libass-enabled FFmpeg and set FFMPEG_PATH"
+        )
+    for tool in ("ffmpeg", "ffprobe"):
+        ours, theirs = result[f"{tool}_path"], result[f"mpt_{tool}_path"]
+        if ours and not mpt_bridge.same_file(ours, theirs):
+            result["problems"].append(
+                f"MoneyPrinterTurbo would run {tool} at {theirs or 'nothing on PATH'} instead of {ours}; "
+                f"put the {tool} you want first on PATH or set {tool.upper()}_PATH"
+            )
+    return result
+
+
+_PREFLIGHT_OK: dict[tuple[str, str, str], dict] = {}
+
+
+def preflight_cached() -> dict:
+    """`preflight()` memoized per (ffmpeg, ffprobe, PATH). Only a clean result is cached, so a fix is picked up."""
+    s = get_settings()
+    mpt_bridge.use_configured_ffmpeg()
+    key = (s.ffmpeg, s.ffprobe, os.environ.get("PATH", ""))
+    if key in _PREFLIGHT_OK:
+        return _PREFLIGHT_OK[key]
+    result = preflight()
+    if not result["problems"]:
+        _PREFLIGHT_OK[key] = result
     return result
 
 

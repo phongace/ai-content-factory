@@ -91,8 +91,9 @@ def cmd_youtube_connect(_a, _f: Factory) -> int:
 def cmd_publish(a, f: Factory) -> int:
     from .publish.youtube import YouTubePublisher
 
-    p = f.publish(a.project, YouTubePublisher(), a.privacy)
+    p = f.publish(a.project, YouTubePublisher(), a.privacy, force=a.force)
     print(p.youtube_url)
+    print(f"privacy: {p.publish_privacy}")
     return 0
 
 
@@ -155,6 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     pb = sub.add_parser("publish")
     pb.add_argument("project")
     pb.add_argument("--privacy", choices=["private", "unlisted"], default="private")
+    pb.add_argument("--force", action="store_true", help="upload again even if the project already has a YouTube video")
     d = sub.add_parser("demo", help="offline end-to-end run with synthetic media")
     d.add_argument("--topic", default="Kỷ luật quan trọng hơn động lực")
     d.add_argument("--language", choices=["vi", "en"], default="vi")

@@ -105,6 +105,9 @@ def render(
     problems = check_ready(project_dir, sb)
     if problems:
         raise RenderError("; ".join(problems))
+    toolchain = media.preflight_cached()["problems"]
+    if toolchain:
+        raise RenderError("; ".join(toolchain))
     started = time.monotonic()
     clips = {s.order: project_dir / str(s.clip_file) for s in sb.scenes}
     audios = {s.order: project_dir / str(s.audio_file) for s in sb.scenes}

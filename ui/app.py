@@ -255,16 +255,22 @@ with tab_pub:
         )
     else:
         if yt == "not_connected":
-            st.warning("Chưa kết nối kênh.")
+            st.warning("Chưa kết nối kênh (hoặc token đã hết hạn/bị thu hồi): bấm Connect YouTube.")
         if st.button("Connect YouTube (mở trình duyệt)"):
             run("Kết nối YouTube", youtube.connect, S)
             st.rerun()
         privacy = st.radio("Privacy", ["private", "unlisted"], horizontal=True)
-        if st.button("Upload lên YouTube", type="primary", disabled=yt != "connected" or p.render.status != "done"):
-            run("Upload YouTube", F.publish, pid, youtube.YouTubePublisher(S), privacy)
+        st.caption("Dự án Google API chưa được xác minh sẽ bị YouTube ép video về private, kể cả khi chọn unlisted.")
+        force = bool(p.youtube_video_id) and st.checkbox(
+            "Upload lại (tạo thêm một video mới trên YouTube)", key=f"reupload-{p.youtube_video_id}"
+        )
+        already_uploaded = bool(p.youtube_video_id) and not force
+        can_upload = yt == "connected" and p.render.status == "done" and not already_uploaded
+        if st.button("Upload lên YouTube", type="primary", disabled=not can_upload):
+            run("Upload YouTube", F.publish, pid, youtube.YouTubePublisher(S), privacy, force=force)
             st.rerun()
     if p.youtube_url:
-        st.success(f"Đã upload ({p.publish_privacy}): {p.youtube_url}")
+        st.success(f"Đã upload (privacy thực tế: {p.publish_privacy}): {p.youtube_url}")
     if p.publish_error:
         st.error(p.publish_error)
 

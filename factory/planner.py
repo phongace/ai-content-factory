@@ -1,13 +1,17 @@
 """Content planner (tracker P0-04, P0-05): topic -> validated storyboard JSON.
 
-ClaudePlanner calls the Anthropic Messages API directly with a forced tool call, so the output is
-JSON by construction and token usage (-> cost) is exact. MockPlanner needs no key.
+ClaudePlanner calls the Anthropic Messages API directly with a strict tool (tool_choice "auto": Sonnet 5.5
+rejects forced tool use), so the output is schema-valid JSON when the model calls the tool, and token usage
+(-> cost) is exact. MockPlanner needs no key.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import time
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -22,7 +26,16 @@ WORDS_PER_SECOND = {"vi": 3.6, "en": 2.5}
 
 
 class PlannerError(Exception):
-    pass
+    """Planning failed. The usage fields hold what the failed run already spent (attempts = API replies received)."""
+
+    def __init__(
+        self, message: str, *, input_tokens: int = 0, output_tokens: int = 0, cost_usd: float = 0.0, attempts: int = 0
+    ):
+        super().__init__(message)
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.cost_usd = cost_usd
+        self.attempts = attempts
 
 
 @dataclass
@@ -118,11 +131,16 @@ class MockPlanner:
 
 
 # ---------------------------------------------------------------- claude
+# strict=True: schema-valid arguments under tool_choice "auto". Strict mode needs additionalProperties:false on every
+# object and rejects minimum/maximum/minItems/maxItems, so those limits live in the descriptions and are enforced by
+# pydantic (validate) plus the retry loop.
 STORYBOARD_TOOL = {
     "name": "submit_storyboard",
     "description": "Submit the finished YouTube Shorts storyboard.",
+    "strict": True,
     "input_schema": {
         "type": "object",
+        "additionalProperties": False,
         "required": ["title", "description", "hashtags", "hook", "scenes"],
         "properties": {
             "title": {"type": "string", "description": "YouTube title, max 90 characters, no hashtags"},
@@ -131,14 +149,17 @@ STORYBOARD_TOOL = {
             "hook": {"type": "string", "description": "the opening line that stops the scroll"},
             "scenes": {
                 "type": "array",
-                "minItems": MIN_SCENES,
-                "maxItems": MAX_SCENES,
+                "description": f"{MIN_SCENES}-{MAX_SCENES} scenes, order 1..n",
                 "items": {
                     "type": "object",
+                    "additionalProperties": False,
                     "required": ["order", "target_duration", "narration", "video_prompt"],
                     "properties": {
                         "order": {"type": "integer"},
-                        "target_duration": {"type": "number", "minimum": MIN_SCENE_TARGET, "maximum": MAX_SCENE_TARGET},
+                        "target_duration": {
+                            "type": "number",
+                            "description": f"seconds, {int(MIN_SCENE_TARGET)}-{int(MAX_SCENE_TARGET)}, never above {int(MAX_SCENE_TARGET)}",
+                        },
                         "narration": {"type": "string"},
                         "video_prompt": {"type": "string"},
                     },
@@ -159,44 +180,87 @@ Rules (hard):
   action, setting, camera move, lighting, the requested visual style. No on-screen text, no logos,
   no real people or brands. 25-70 words.
 - Title/description/hashtags in the requested language, ready for YouTube. Include #shorts.
-Return ONLY by calling the submit_storyboard tool."""
+Answer ONLY by calling the submit_storyboard tool, exactly once. Do not write a plain-text answer."""
+
+# Sonnet 5.5 thinks by default and thinking tokens count toward max_tokens: leave generous headroom.
+MAX_TOKENS = 16000
+HTTP_TIMEOUT_S = 300
+# Transient HTTP failures (these statuses, connection errors, timeouts) are retried with exponential backoff.
+RETRY_STATUS = frozenset({429, 500, 502, 503, 504, 529})
+HTTP_RETRIES = 3
+BACKOFF_BASE_S = 2.0
+BACKOFF_MAX_S = 60.0
+
+
+def backoff_seconds(retry: int, retry_after: str | None) -> float:
+    """Wait before HTTP retry number `retry` (0-based): the Retry-After header if numeric, else 2s, 4s, 8s; capped."""
+    wait = BACKOFF_BASE_S * 2**retry
+    if retry_after:
+        with suppress(ValueError):  # HTTP-date form: keep the exponential wait
+            wait = float(retry_after)
+    return min(max(wait, 0.0), BACKOFF_MAX_S)
 
 
 class ClaudePlanner:
     name = "claude"
     url = "https://api.anthropic.com/v1/messages"
 
-    def __init__(self, settings: Settings | None = None, max_attempts: int = 3, session=None):
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        max_attempts: int = 3,
+        session=None,
+        sleep: Callable[[float], None] = time.sleep,
+    ):
         self.s = settings or get_settings()
         if not self.s.anthropic_api_key:
             raise PlannerError("ANTHROPIC_API_KEY is not set")
         self.max_attempts = max_attempts
         self.http = session or requests.Session()
+        self.sleep = sleep
 
     def _call(self, system: str, messages: list[dict]) -> dict:
-        try:
-            r = self.http.post(
-                self.url,
-                headers={
-                    "x-api-key": self.s.anthropic_api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": self.s.anthropic_model,
-                    "max_tokens": 2500,
-                    "system": system,
-                    "tools": [STORYBOARD_TOOL],
-                    "tool_choice": {"type": "tool", "name": "submit_storyboard"},
-                    "messages": messages,
-                },
-                timeout=120,
-            )
-        except requests.RequestException as e:
-            raise PlannerError(f"Claude request failed: {e}") from e
-        if r.status_code != 200:
-            raise PlannerError(f"Claude API {r.status_code}: {r.text[:300]}")
-        return r.json()
+        headers = {
+            "x-api-key": self.s.anthropic_api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        body = {
+            "model": self.s.anthropic_model,
+            "max_tokens": MAX_TOKENS,
+            "system": system,
+            "tools": [STORYBOARD_TOOL],
+            "tool_choice": {"type": "auto"},
+            "messages": messages,
+        }
+        retry = 0
+        while True:
+            try:
+                r = self.http.post(self.url, headers=headers, json=body, timeout=HTTP_TIMEOUT_S)
+            except (requests.ConnectionError, requests.Timeout) as e:
+                failure, retry_after = f"Claude request failed: {e}", None
+            except requests.RequestException as e:
+                raise PlannerError(f"Claude request failed: {e}") from e
+            else:
+                if r.status_code == 200:
+                    return r.json()
+                failure = f"Claude API {r.status_code}: {r.text[:300]}"
+                if r.status_code not in RETRY_STATUS:
+                    raise PlannerError(failure)
+                retry_after = r.headers.get("retry-after")
+            if retry >= HTTP_RETRIES:
+                raise PlannerError(f"{failure} (gave up after {retry} retries)")
+            self.sleep(backoff_seconds(retry, retry_after))
+            retry += 1
+
+    def _cost(self, in_tok: int, out_tok: int) -> float:
+        return round((in_tok * self.s.anthropic_input_price + out_tok * self.s.anthropic_output_price) / 1e6, 6)
+
+    def _failed(self, message: str, in_tok: int, out_tok: int, attempts: int) -> PlannerError:
+        """PlannerError carrying the usage already spent, so the caller can still record the cost of a failed run."""
+        return PlannerError(
+            message, input_tokens=in_tok, output_tokens=out_tok, cost_usd=self._cost(in_tok, out_tok), attempts=attempts
+        )
 
     def generate(self, inp: PlannerInput) -> PlanResult:
         targets = scene_plan(inp.target_duration)
@@ -210,43 +274,73 @@ class ClaudePlanner:
         lang = "Vietnamese" if inp.language == "vi" else "English"
         user = (
             f"Topic: {inp.topic}\nLanguage: {lang}\nTotal duration: {inp.target_duration}s "
-            f"(suggested {len(targets)} scenes of ~{targets[0]}s)\nVisual style: {inp.visual_style}"
+            f"(suggested {len(targets)} scenes of ~{targets[0]}s)\nVisual style: {inp.visual_style}\n\n"
+            "Answer by calling the submit_storyboard tool with the finished storyboard."
         )
         messages: list[dict] = [{"role": "user", "content": user}]
         in_tok = out_tok = 0
         last_error = ""
+        stop = None
         for attempt in range(1, self.max_attempts + 1):
-            data = self._call(system, messages)
+            try:
+                data = self._call(system, messages)
+            except PlannerError as e:
+                raise self._failed(str(e), in_tok, out_tok, attempt - 1) from e
             usage = data.get("usage", {})
             in_tok += int(usage.get("input_tokens", 0))
             out_tok += int(usage.get("output_tokens", 0))
-            block = next((b for b in data.get("content", []) if b.get("type") == "tool_use"), None)
+            stop = data.get("stop_reason")
+            content = data.get("content", [])
+            block = next(
+                (b for b in content if b.get("type") == "tool_use" and b.get("name") == STORYBOARD_TOOL["name"]), None
+            )
+            if stop in ("max_tokens", "refusal") or block is None:
+                # No usable tool call (a cut-off block is not trustworthy either): nudge with a plain user turn.
+                if stop == "refusal":
+                    last_error = f"model refused the request (stop_details={data.get('stop_details')})"
+                elif stop == "max_tokens":
+                    last_error = f"output cut off at max_tokens={MAX_TOKENS} before submit_storyboard was completed"
+                else:
+                    last_error = "model did not call submit_storyboard"
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"Your previous reply did not submit a storyboard ({last_error}). "
+                        "Answer ONLY by calling submit_storyboard.",
+                    }
+                )
+                continue
             try:
-                if block is None:
-                    raise ValueError("model did not call submit_storyboard")
                 sb = validate(block.get("input") or {}, inp)
-                cost = (in_tok * self.s.anthropic_input_price + out_tok * self.s.anthropic_output_price) / 1e6
-                return PlanResult(sb, self.name, round(cost, 6), in_tok, out_tok, attempt)
             except (ValidationError, ValueError) as e:
                 last_error = str(e)[:1500]
-                if block is None:
-                    messages.append({"role": "user", "content": "Call submit_storyboard now."})
-                    continue
+                feedback = f"Invalid storyboard, fix and call submit_storyboard again:\n{last_error}"
+                # Echo the reply unchanged (thinking blocks included: the API rejects edited ones) and answer
+                # every tool_use in it, not just the one we validated.
                 messages += [
-                    {"role": "assistant", "content": [block]},
+                    {"role": "assistant", "content": content},
                     {
                         "role": "user",
                         "content": [
                             {
                                 "type": "tool_result",
-                                "tool_use_id": block["id"],
+                                "tool_use_id": b["id"],
                                 "is_error": True,
-                                "content": f"Invalid storyboard, fix and call submit_storyboard again:\n{last_error}",
+                                "content": feedback if b is block else "Ignored: call submit_storyboard once.",
                             }
+                            for b in content
+                            if b.get("type") == "tool_use"
                         ],
                     },
                 ]
-        raise PlannerError(f"planner output invalid after {self.max_attempts} attempts: {last_error}")
+                continue
+            return PlanResult(sb, self.name, self._cost(in_tok, out_tok), in_tok, out_tok, attempt)
+        raise self._failed(
+            f"planner output invalid after {self.max_attempts} attempts (last stop_reason={stop}): {last_error}",
+            in_tok,
+            out_tok,
+            self.max_attempts,
+        )
 
 
 def get_planner(settings: Settings | None = None) -> ContentPlanner:

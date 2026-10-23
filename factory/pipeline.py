@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import media
 from .config import Settings, get_settings
-from .planner import ContentPlanner, get_planner
+from .planner import ContentPlanner, PlannerError, get_planner
 from .publish.base import Publisher, PublishRequest
 from .render import render as render_video
 from .schema import PlannerInput, Project, StoryboardFile, now_iso
@@ -86,7 +86,22 @@ class Factory:
             topic=p.topic, target_duration=p.target_duration, language=p.language, visual_style=p.visual_style
         )
         with self.stage(pid, "planning"):
-            result = planner.generate(inp)
+            try:
+                result = planner.generate(inp)
+            except PlannerError as e:
+                if e.cost_usd:
+                    failed_cost = e.cost_usd
+
+                    def spent(p: Project) -> None:
+                        p.cost.claude_estimated_cost = round(p.cost.claude_estimated_cost + failed_cost, 6)
+
+                    self.store.update(pid, spent)
+                    self.store.log(
+                        pid,
+                        f"plan failed after {e.attempts} attempts: "
+                        f"tokens={e.input_tokens}/{e.output_tokens}, cost=${e.cost_usd}",
+                    )
+                raise
             sb = self.store.save_storyboard(pid, StoryboardFile.from_plan(result.storyboard))
             for d in ("audio", "scenes"):  # a new plan invalidates old per-scene assets
                 for f in self.store.path(pid, d).glob("scene_*"):
@@ -268,8 +283,10 @@ class Factory:
         return p
 
     # ------------------------------------------------------------ publish
-    def publish(self, pid: str, publisher: Publisher, privacy: str = "private") -> Project:
+    def publish(self, pid: str, publisher: Publisher, privacy: str = "private", force: bool = False) -> Project:
         p = self.store.get(pid)
+        if p.youtube_video_id and not force:
+            raise ValueError(f"already uploaded to YouTube ({p.youtube_url}); pass force to upload a new copy")
         if p.render.status != "done" or not p.render.file:
             raise ValueError("render the video before publishing")
         if p.render_stale:
@@ -300,11 +317,13 @@ class Factory:
             self.store.update(pid, failed)
             raise
 
+        actual_privacy = res.privacy or req.privacy
+
         def done(p: Project) -> None:
             p.youtube_video_id, p.youtube_url = res.video_id, res.url
-            p.publish_status, p.published_at, p.publish_privacy = "uploaded", now_iso(), req.privacy
+            p.publish_status, p.published_at, p.publish_privacy = "uploaded", now_iso(), actual_privacy
             p.status = "published"
 
         p = self.store.update(pid, done)
-        self.store.log(pid, f"published {res.url} ({req.privacy})")
+        self.store.log(pid, f"published {res.url} (requested {req.privacy}, actual {actual_privacy})")
         return p

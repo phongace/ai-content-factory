@@ -32,6 +32,7 @@ class PublishResult:
     video_id: str
     url: str
     raw: dict = field(default_factory=dict)
+    privacy: Privacy | None = None  # what the platform actually applied, which can differ from the request
 
 
 class Publisher(Protocol):
@@ -60,4 +61,4 @@ class MockPublisher:
             raise PublishError(f"file not found: {req.file}")
         self.uploads.append(req)
         vid = f"mock{len(self.uploads):07d}"
-        return PublishResult(vid, f"https://youtube.com/shorts/{vid}")
+        return PublishResult(vid, f"https://youtube.com/shorts/{vid}", privacy=req.privacy)

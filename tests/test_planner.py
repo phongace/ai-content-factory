@@ -81,8 +81,8 @@ def test_get_planner_falls_back_to_mock_without_key():
 
 
 class FakeResponse:
-    def __init__(self, payload, status=200):
-        self.payload, self.status_code, self.text = payload, status, str(payload)
+    def __init__(self, payload, status=200, headers=None):
+        self.payload, self.status_code, self.text, self.headers = payload, status, str(payload), headers or {}
 
     def json(self):
         return self.payload
@@ -109,7 +109,7 @@ def tool_reply(raw, tid="t1"):
 def claude(monkeypatch, responses):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     session = FakeSession(responses)
-    return ClaudePlanner(get_settings(), session=session), session
+    return ClaudePlanner(get_settings(), session=session, sleep=lambda _seconds: None), session
 
 
 def test_claude_retries_invalid_then_succeeds(monkeypatch):
@@ -122,7 +122,7 @@ def test_claude_retries_invalid_then_succeeds(monkeypatch):
     assert r.cost_usd == pytest.approx((2000 * 2 + 1000 * 10) / 1e6)
     retry_msg = session.calls[1]["messages"][-1]["content"][0]
     assert retry_msg["type"] == "tool_result" and retry_msg["is_error"]
-    assert session.calls[0]["tool_choice"] == {"type": "tool", "name": "submit_storyboard"}
+    assert session.calls[0]["tool_choice"] == {"type": "auto"}
 
 
 def test_claude_gives_up_with_clear_error(monkeypatch):
@@ -133,6 +133,7 @@ def test_claude_gives_up_with_clear_error(monkeypatch):
 
 
 def test_claude_http_error(monkeypatch):
-    planner, _ = claude(monkeypatch, [FakeResponse({"error": "overloaded"}, status=529)])
+    planner, session = claude(monkeypatch, [FakeResponse({"error": "overloaded"}, status=529)] * 4)
     with pytest.raises(PlannerError, match="529"):
         planner.generate(PlannerInput(topic="Discipline", target_duration=30))
+    assert len(session.calls) == 4

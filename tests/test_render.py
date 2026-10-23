@@ -1,4 +1,7 @@
-"""TC-04, TC-05, TC-06, TC-08, TC-11 + P0-10..13. Spawns ffmpeg (slow, ~1-2 min)."""
+"""TC-04, TC-05, TC-06, TC-08, TC-11 + P0-10..13. Spawns ffmpeg (slow, ~1-2 min).
+
+Needs a libass-enabled FFmpeg (FFMPEG_PATH / FFPROBE_PATH from the process env); skipped by conftest otherwise.
+"""
 
 from __future__ import annotations
 
