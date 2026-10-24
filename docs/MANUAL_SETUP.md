@@ -39,14 +39,20 @@ Fallback nếu API không khớp: export audio từ UI VoiceStudio rồi upload 
 
 1. Google Cloud Console → tạo project → bật **YouTube Data API v3**.
 2. OAuth consent screen: loại External, trạng thái Testing, thêm Gmail sở hữu kênh vào **Test users**.
-3. Credentials → Create OAuth client ID → loại **Desktop app**. Không cần khai redirect URI (app dùng `http://localhost:8765` của flow desktop).
-4. Điền `YOUTUBE_CLIENT_ID` và `YOUTUBE_CLIENT_SECRET` vào `.env.local`.
-5. `uv run factory youtube-connect` (hoặc nút Connect trong UI), đăng nhập đúng tài khoản kênh, chọn đúng channel. Token lưu ở `data/secrets/youtube_token.json`.
+3. Credentials → Create OAuth client ID → loại **Desktop app** → **Download JSON** (file có mục `installed`). Không cần khai redirect URI: flow desktop dùng `http://localhost` với một port trống tự chọn. Client loại `web` không dùng được.
+4. Lưu file JSON đó đúng tại `data/secrets/youtube_client_secret.json` (đã gitignore) và `chmod 600`. Muốn để chỗ khác thì đặt `YOUTUBE_CLIENT_SECRET_FILE=<đường dẫn>` trong `.env.local` (đường dẫn tương đối tính từ root repo). Cặp `YOUTUBE_CLIENT_ID` + `YOUTUBE_CLIENT_SECRET` trong `.env.local` vẫn chạy nhưng chỉ là fallback khi file không tồn tại. Không dán nội dung file này vào chat, log hay git.
+5. `uv run factory youtube-connect` (hoặc nút Connect trong UI). Lệnh in khối `HUMAN ACTION REQUIRED`, mở trình duyệt và chờ tối đa 300 giây: chọn đúng Google account quản lý kênh, bấm Continue / Allow, quay lại terminal khi Google báo authorization completed. Nếu trình duyệt không tự mở, mở URL mà lệnh in ra. Chỉ xin quyền `https://www.googleapis.com/auth/youtube.upload`.
+6. Sau khi đồng ý, lệnh tự kiểm tra token bằng Google tokeninfo (có đúng scope `youtube.upload`, `expires_in > 0`) rồi mới lưu token ở `data/secrets/youtube_token.json` (mode 600) và in JSON: `state`, `scopes`, `access_token_expires_in_seconds`, `access_token_expires_at`, `has_refresh_token`. Không in token hay client secret.
+7. Kiểm tra lại bất cứ lúc nào: `uv run factory youtube-status` in `connected` / `not_connected` / `not_configured`, scope đã cấp và hạn access token (exit code 0 chỉ khi `connected`). Access token hết hạn thì tự refresh, không cần connect lại.
+8. Upload thử một video private từ CLI: `uv run factory publish <project_id> --privacy private --title "Test private upload" --description "Kiểm tra OAuth, xoá sau khi test"`. Lệnh in URL, `video_id`, `privacy` thực tế, `upload_status`, `published_at`; cùng các giá trị này nằm trong `data/projects/<id>/project.json`. Bỏ `--title`/`--description` thì dùng metadata của storyboard. Project đã upload rồi thì cần thêm `--force` để tạo video mới.
+
+Vì chỉ có scope `youtube.upload`, app không gọi được API đọc (ví dụ `channels.list(mine=True)` trả insufficient scope), nên không hiển thị tên kênh: kiểm tra video đã lên đúng kênh trong YouTube Studio.
 
 Lưu ý quan trọng:
 - Google ghi rõ video upload qua `videos.insert` từ API project **chưa qua audit** (tạo sau 28/7/2020) sẽ bị khoá ở chế độ **private**. Nghĩa là upload POC sẽ luôn private (đúng mục tiêu test), chọn unlisted cũng bị ép private. Muốn upload public/unlisted tự động thì phải xin audit (Phase 2).
 - App ở trạng thái Testing thì refresh token thường hết hạn sau khoảng 7 ngày, khi đó chạy lại `youtube-connect`.
-- Upload tốn quota API, quota mặc định chỉ đủ một số ít video/ngày. Xem quota trong Console.
+- Upload tốn quota API, quota mặc định chỉ đủ một số ít video/ngày. Xem quota trong Console. Hết quota thì lệnh báo lỗi và không tự thử lại; quota reset lúc nửa đêm giờ Pacific.
+- Ý nghĩa từng thông báo lỗi YouTube và cách xử lý: xem `docs/POC_RUNBOOK.md` mục "Lỗi YouTube".
 
 ## 5. Nhạc nền
 

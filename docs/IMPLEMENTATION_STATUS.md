@@ -21,8 +21,8 @@ Kiểm chứng: 102 test tự động pass (74 logic + 28 render thật bằng F
 | P0-11 | DONE | Pass cuối: sidechain ducking nhạc dưới voice + loudnorm -14 LUFS (đo được -14.0). Không nhạc vẫn render | | Chọn nhạc royalty-free |
 | P0-12 | DONE | Burn ASS, font Be Vietnam Pro (OFL) có dấu tiếng Việt, đặt cao tránh UI Shorts | Chưa xem trên điện thoại thật | Xem thử 1 video trên phone |
 | P0-13 | DONE | QC: preview, duration, size, status, lỗi, cảnh báo (thiếu asset, file asset mất/hỏng/sai đuôi, asset đổi sau render). Thay asset 1 scene (video hoặc ảnh) → render lại, chỉ scene đó build lại, không chạy lại planner/voice | | |
-| P0-14 | BLOCKED_EXTERNAL | OAuth desktop flow, token local, tự refresh, trạng thái not_configured / not_connected | Chưa có OAuth client | MANUAL_SETUP §4 |
-| P0-15 | BLOCKED_EXTERNAL | Upload resumable, private mặc định, unlisted cho phép, public bị chặn, lưu video ID/URL. Test bằng MockPublisher | Chưa test API thật | Sau §4: upload 1 video private |
+| P0-14 | DONE | OAuth desktop flow (client JSON `data/secrets/youtube_client_secret.json`, scope `youtube.upload`), token `data/secrets/youtube_token.json` mode 600, tự refresh, kiểm qua tokeninfo, `factory youtube-status` | Connect thật 2026-10-24: connected, có refresh token | MANUAL_SETUP §4 |
+| P0-15 | DONE | Upload resumable, private mặc định, unlisted cho phép, public bị chặn, lưu video ID/URL/privacy/status/thời điểm, chặn upload trùng | Upload thật 2026-10-24: `iYjDWXS2fL8` (private, demo 25.4 s) | `factory publish <id> --privacy private --title ... --description ...` |
 | P0-16 | DONE | `logs/events.log`, status/stage/error theo stage, cost Claude/Muse/Voice/render ms | | |
 | P0-17 | PARTIAL | E2E offline (`factory demo`) + test tự động. E2E thật Topic A/B/C chưa chạy | Cần key, VoiceStudio, clip Muse, OAuth | Chạy 3 topic thật |
 | P0-18 | PARTIAL | RUNBOOK, MANUAL_SETUP, CLAUDE.md xong | Fix blocker sau lần chạy thật | |
@@ -39,7 +39,7 @@ Kiểm chứng: 102 test tự động pass (74 logic + 28 render thật bằng F
 | TC-06 | PASS | `test_tc06_timing_follows_audio` (clip 3s < audio, clip 14s > audio) |
 | TC-07 | PASS | `tests/test_subtitles.py::test_tc07_*` |
 | TC-08 | PASS | `test_tc04_tc08_*` (render #2, reuse ≥9 stage) |
-| TC-09 | PASS (mock) | `tests/test_publish.py::test_tc09_*`, API thật chờ OAuth |
+| TC-09 | PASS | Mock: `tests/test_publish.py`; thật: upload private `iYjDWXS2fL8` ngày 2026-10-24 |
 | TC-10 | PASS | `test_tc10_voicestudio_down_fails_clearly_and_retry_works` |
 | TC-11 | PASS | `test_tc11_*` (từ chối lúc upload + báo đúng scene lúc render) |
 | TC-12 | NOT_STARTED | Cần đủ credential + clip thật |

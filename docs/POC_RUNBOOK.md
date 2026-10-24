@@ -27,7 +27,7 @@ Mọi thứ đều optional, thiếu thì app tự chạy chế độ mock:
 |---|---|
 | `ANTHROPIC_API_KEY` | Planner dùng MockPlanner (kịch bản mẫu) |
 | `VOICE_PROVIDER=voicestudio` + `VOICESTUDIO_*` | Voice dùng mock (tiếng tone) hoặc upload audio tay |
-| `YOUTUBE_CLIENT_ID/SECRET` | Tab Publish báo "YouTube not configured", render vẫn chạy |
+| `data/secrets/youtube_client_secret.json` (hoặc `YOUTUBE_CLIENT_SECRET_FILE`; fallback `YOUTUBE_CLIENT_ID/SECRET`) | Tab Publish báo "YouTube not configured", render vẫn chạy |
 | `BGM_FILE` | Không có nhạc nền, hoặc upload nhạc ngay trong UI |
 
 ## 3. Chạy app
@@ -49,7 +49,7 @@ uv run streamlit run ui/app.py    # http://localhost:8501
 5. **Render** (tab Render & QC): upload nhạc nền nếu muốn, chỉnh volume, bấm Render. Ra `data/projects/<id>/renders/final-short.mp4` 1080x1920, H.264/AAC, 30fps, -14 LUFS, phụ đề đã burn.
 6. **QC**: xem preview, duration, size, cảnh báo (scene chưa có asset, file asset mất/hỏng/sai đuôi, asset đổi sau lần render cuối, clip loop...). Scene nào xấu: chọn scene ở mục "Replace scene → Render again", upload asset mới (video hoặc ảnh, đổi ảnh sang video và ngược lại đều được), bấm nút. Chỉ scene đó render lại, planner và voice không chạy lại.
 7. **Chi phí Muse**: nhập tổng chi phí Muse thật của video ở cuối tab Render & QC.
-8. **Publish** (tab Publish): "Connect YouTube" (lần đầu), chọn private/unlisted, "Upload lên YouTube". Link hiện ngay sau khi xong.
+8. **Publish** (tab Publish): "Connect YouTube" (lần đầu, xem `docs/MANUAL_SETUP.md` §4), chọn private/unlisted, "Upload lên YouTube". Link hiện ngay sau khi xong.
 
 ## CLI tương đương
 
@@ -62,12 +62,33 @@ uv run factory clip <project_id> 1 ~/Downloads/muse_scene1.mp4     # video (Sour
 uv run factory clip <project_id> 2 ~/Downloads/scene2.jpg            # ảnh (Source mặc định: upload)
 uv run factory clip <project_id> 2 scene2.webp --source generated    # muse | upload | generated | mock
 uv run factory render <project_id> [--bgm music.mp3]
-uv run factory youtube-connect
+uv run factory youtube-connect       # OAuth một lần: mở trình duyệt, chờ tối đa 300s, kiểm tra scope, lưu token
+uv run factory youtube-status        # connected | not_connected | not_configured + scope + hạn token (exit 0 chỉ khi connected)
 uv run factory publish <project_id> --privacy private
+uv run factory publish <project_id> --privacy private --title "Test private upload" --description "Kiểm tra OAuth"
 uv run factory status <project_id>
 uv run factory list
 uv run factory demo --music          # offline: 4 scene video / ảnh / video / ảnh + voice mock + phụ đề + nhạc
 ```
+
+## Lỗi YouTube
+
+Mọi lỗi dưới đây hiện dạng `ERROR: ...` ở CLI (hoặc thanh lỗi trong UI) và lưu vào `publish_error` của project. Lỗi nào cũng chạy lại được sau khi xử lý.
+
+| Thông báo (rút gọn) | Nghĩa là | Xử lý |
+|---|---|---|
+| `YouTube not configured: OAuth client file not found at ...` | Thiếu file client JSON và thiếu cặp env fallback | Lưu JSON Desktop app vào đường dẫn được in ra (MANUAL_SETUP §4) |
+| `... is not valid JSON` / `found type: web` / `missing client_secret` | File hỏng, sai loại client (`web` thay vì `installed`), hoặc thiếu trường | Tạo client loại Desktop app và tải JSON lại |
+| `authorization denied or cancelled (access_denied)` | Bấm Cancel/Deny, hoặc Google chặn account | Chạy lại `youtube-connect`, bấm Continue / Allow; account phải nằm trong Test users |
+| `timed out after 300s waiting for the Google authorization callback` | Không hoàn tất consent trong 5 phút, hoặc trình duyệt không vào được `http://localhost` | Chạy lại và hoàn tất consent; kiểm tra trình duyệt/máy cùng chạy lệnh |
+| `Google authorization callback failed (invalid_client ...)` | Client JSON không còn hợp lệ hoặc thuộc project khác | Tải JSON mới từ đúng project |
+| `Google did not return a refresh token` | Account đã cấp quyền trước đó mà Google không phát refresh token mới | Gỡ app tại https://myaccount.google.com/permissions rồi connect lại |
+| `YouTube token lacks the youtube.upload permission` / `insufficient permissions` | Token không có scope upload (bỏ tick quyền ở màn hình consent) | Chạy lại `youtube-connect` và giữ tick quyền upload |
+| `YouTube token expired or revoked (invalid_grant ...)` | Refresh token hết hạn (app Testing: khoảng 7 ngày) hoặc bị thu hồi | Chạy lại `youtube-connect` |
+| `YouTube Data API v3 is not enabled ...` | Project của OAuth client chưa bật API (`accessNotConfigured` / `SERVICE_DISABLED`) | Bật YouTube Data API v3, chờ khoảng 1 phút, chạy lại |
+| `YouTube quota or upload limit reached (quotaExceeded / uploadLimitExceeded / rateLimitExceeded)` | Hết quota API hoặc giới hạn upload của kênh. Không tự thử lại | Đợi quota reset (nửa đêm giờ Pacific) rồi chạy lại |
+| `network error ...` / `gave up after 5 attempts` | Mất mạng hoặc YouTube trả 5xx; upload resumable đã tự thử lại 5 lần liên tiếp | Kiểm tra mạng và chạy lại lệnh publish |
+| `already uploaded to YouTube (...)` | Project đã có video | Thêm `--force` nếu thật sự muốn tạo bản mới |
 
 ## Kiểm tra chất lượng
 

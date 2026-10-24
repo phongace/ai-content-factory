@@ -325,7 +325,16 @@ class Factory:
         return p
 
     # ------------------------------------------------------------ publish
-    def publish(self, pid: str, publisher: Publisher, privacy: str = "private", force: bool = False) -> Project:
+    def publish(
+        self,
+        pid: str,
+        publisher: Publisher,
+        privacy: str = "private",
+        force: bool = False,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> Project:
+        """Upload the rendered video. `title`/`description` override the storyboard metadata for this upload only."""
         p = self.store.get(pid)
         if p.youtube_video_id and not force:
             raise ValueError(f"already uploaded to YouTube ({p.youtube_url}); pass force to upload a new copy")
@@ -334,10 +343,13 @@ class Factory:
         if p.render_stale:
             raise ValueError("assets changed after the last render, render again before publishing")
         sb = self.storyboard(pid)
+        final_title = sb.title if title is None else title.strip()
+        if not final_title or len(final_title) > 100:
+            raise ValueError("title must be 1-100 characters (YouTube limit)")
         req = PublishRequest(
             file=self.store.path(pid, p.render.file),
-            title=sb.title,
-            description=sb.description,
+            title=final_title,
+            description=sb.description if description is None else description,
             hashtags=sb.hashtags,
             privacy=privacy,  # type: ignore[arg-type]
             language=p.language,

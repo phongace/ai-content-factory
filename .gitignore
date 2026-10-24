@@ -9,6 +9,7 @@ build/
 dist/
 
 # secrets: never commit
+data/secrets/
 .env
 .env.local
 .env.*.local

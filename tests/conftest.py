@@ -58,7 +58,14 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setattr(config_mod, "_ENV_LOADED", True)  # never read the developer's .env.local
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("MPT_HOME", str(tmp_path / "data" / "mpt"))
-    for key in ("ANTHROPIC_API_KEY", "YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET", "BGM_FILE", "PLANNER"):
+    for key in (
+        "ANTHROPIC_API_KEY",
+        "YOUTUBE_CLIENT_ID",
+        "YOUTUBE_CLIENT_SECRET",
+        "YOUTUBE_CLIENT_SECRET_FILE",
+        "BGM_FILE",
+        "PLANNER",
+    ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("VOICE_PROVIDER", "mock")
     monkeypatch.setenv("VOICESTUDIO_BASE_URL", "http://127.0.0.1:9/v1")  # closed port

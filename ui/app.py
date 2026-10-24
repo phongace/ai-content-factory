@@ -281,7 +281,8 @@ with tab_pub:
     yt = youtube.status(S)
     if yt == "not_configured":
         st.info(
-            "YouTube not configured: điền YOUTUBE_CLIENT_ID / YOUTUBE_CLIENT_SECRET trong .env.local "
+            "YouTube not configured: lưu file OAuth client JSON (Desktop app) vào "
+            f"{S.youtube_client_secret_file} hoặc điền YOUTUBE_CLIENT_ID / YOUTUBE_CLIENT_SECRET trong .env.local "
             "(xem docs/MANUAL_SETUP.md). Render vẫn dùng bình thường."
         )
     else:

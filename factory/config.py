@@ -64,6 +64,7 @@ class Settings:
     bgm_volume: float
     youtube_client_id: str | None
     youtube_client_secret: str | None
+    youtube_client_secret_file: Path
 
     @property
     def projects_dir(self) -> Path:
@@ -78,13 +79,19 @@ class Settings:
         return self.data_dir / "secrets" / "youtube_token.json"
 
     @property
-    def youtube_configured(self) -> bool:
+    def youtube_client_from_env(self) -> bool:
         return bool(self.youtube_client_id and self.youtube_client_secret)
+
+    @property
+    def youtube_configured(self) -> bool:
+        """An OAuth client is available: the Desktop-app JSON file (primary) or the env ID/secret pair."""
+        return self.youtube_client_secret_file.is_file() or self.youtube_client_from_env
 
 
 def get_settings() -> Settings:
     load_env_file()
     data_dir = Path(_env("DATA_DIR") or ROOT / "data").expanduser().resolve()
+    secret_file = _env("YOUTUBE_CLIENT_SECRET_FILE")
     return Settings(
         data_dir=data_dir,
         ffmpeg=_env("FFMPEG_PATH", "ffmpeg") or "ffmpeg",
@@ -107,4 +114,10 @@ def get_settings() -> Settings:
         bgm_volume=_num("BGM_VOLUME", 0.25),
         youtube_client_id=_env("YOUTUBE_CLIENT_ID"),
         youtube_client_secret=_env("YOUTUBE_CLIENT_SECRET"),
+        # relative paths resolve against the repo root; the default sits next to the token file
+        youtube_client_secret_file=(
+            ROOT / Path(secret_file).expanduser()
+            if secret_file
+            else data_dir / "secrets" / "youtube_client_secret.json"
+        ),
     )

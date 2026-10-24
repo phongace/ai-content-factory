@@ -85,17 +85,29 @@ def cmd_status(a, f: Factory) -> int:
 def cmd_youtube_connect(_a, _f: Factory) -> int:
     from .publish import youtube
 
-    path = youtube.connect()
-    print(f"YouTube connected, token saved to {path}")
+    s = get_settings()
+    info = youtube.connect(s)
+    _print({"state": "connected", "token_file": str(s.youtube_token_file), **info.as_dict()})
     return 0
+
+
+def cmd_youtube_status(_a, _f: Factory) -> int:
+    from .publish import youtube
+
+    report = youtube.describe(get_settings())
+    _print(report)
+    return 0 if report["state"] == "connected" else 1
 
 
 def cmd_publish(a, f: Factory) -> int:
     from .publish.youtube import YouTubePublisher
 
-    p = f.publish(a.project, YouTubePublisher(), a.privacy, force=a.force)
+    p = f.publish(a.project, YouTubePublisher(), a.privacy, force=a.force, title=a.title, description=a.description)
     print(p.youtube_url)
+    print(f"video_id: {p.youtube_video_id}")
     print(f"privacy: {p.publish_privacy}")
+    print(f"upload_status: {p.publish_status}")
+    print(f"published_at: {p.published_at}")
     return 0
 
 
@@ -159,10 +171,13 @@ def main(argv: list[str] | None = None) -> int:
     r = sub.add_parser("render")
     r.add_argument("project")
     r.add_argument("--bgm", type=Path)
-    sub.add_parser("youtube-connect", help="one-time OAuth in the browser")
+    sub.add_parser("youtube-connect", help="one-time OAuth in the browser, then verifies the token scope")
+    sub.add_parser("youtube-status", help="connected / not_connected / not_configured + granted scopes and expiry")
     pb = sub.add_parser("publish")
     pb.add_argument("project")
     pb.add_argument("--privacy", choices=["private", "unlisted"], default="private")
+    pb.add_argument("--title", help="YouTube title for this upload (default: storyboard title, max 100 chars)")
+    pb.add_argument("--description", help="YouTube description for this upload (default: storyboard description)")
     pb.add_argument("--force", action="store_true", help="upload again even if the project already has a YouTube video")
     d = sub.add_parser("demo", help="offline end-to-end run with synthetic media")
     d.add_argument("--topic", default="Kỷ luật quan trọng hơn động lực")
