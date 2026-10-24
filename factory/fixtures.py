@@ -33,10 +33,23 @@ def make_tone(path: Path, seconds: float, freq: int = 300) -> Path:
     return path
 
 
-def make_image(path: Path, width: int = 1600, height: int = 900) -> Path:
+def _still(path: Path, source: str, vf: str | None = None) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    run_ffmpeg(["-f", "lavfi", "-i", f"mandelbrot=size={width}x{height}", "-frames:v", "1", str(path)])
+    jpeg = path.suffix.lower() in (".jpg", ".jpeg")
+    chain = ",".join(x for x in (vf, "format=yuvj420p" if jpeg else None) if x)
+    run_ffmpeg(["-f", "lavfi", "-i", source, *(["-vf", chain] if chain else []), "-frames:v", "1", str(path)])
     return path
+
+
+def make_image(path: Path, width: int = 1600, height: int = 900) -> Path:
+    """Still image; the format follows the extension (png, jpg, webp when the ffmpeg build has libwebp)."""
+    return _still(path, f"mandelbrot=size={width}x{height}")
+
+
+def make_circle_image(path: Path, width: int, height: int, radius: int) -> Path:
+    """White disc centred on black: any non-uniform scaling shows up as a non-circular disc."""
+    disc = f"geq=lum='if(lt(hypot(X-W/2,Y-H/2),{radius}),255,0)':cb=128:cr=128"
+    return _still(path, f"color=c=black:s={width}x{height}", disc)
 
 
 def make_corrupt(path: Path) -> Path:
@@ -46,7 +59,7 @@ def make_corrupt(path: Path) -> Path:
 
 
 def make_set(folder: Path) -> dict[str, Path]:
-    """Portrait/landscape/mixed clips of different lengths + music + image + corrupt file."""
+    """Portrait/landscape/mixed clips of different lengths + stills + music + corrupt files."""
     return {
         "landscape_short": make_clip(folder / "landscape_3s.mp4", 1280, 720, 3),
         "portrait_long": make_clip(folder / "portrait_14s.mp4", 1080, 1920, 14, "testsrc"),
@@ -55,6 +68,9 @@ def make_set(folder: Path) -> dict[str, Path]:
         "landscape_long": make_clip(folder / "landscape_12s.mp4", 1920, 1080, 12),
         "portrait_short": make_clip(folder / "portrait_2s.mp4", 720, 1280, 2, "testsrc"),
         "image": make_image(folder / "still.png"),
+        "portrait_image": make_image(folder / "portrait_800x1200.jpg", 800, 1200),
+        "landscape_image": make_image(folder / "landscape_1600x900.jpg", 1600, 900),
         "music": make_tone(folder / "music.mp3", 40, 180),
         "corrupt": make_corrupt(folder / "corrupt.mp4"),
+        "corrupt_image": make_corrupt(folder / "corrupt.jpg"),
     }

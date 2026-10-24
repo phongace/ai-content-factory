@@ -1,6 +1,7 @@
 """Streamlit UI for the POC: `uv run streamlit run ui/app.py`.
 
-Flow: Create -> Plan -> Storyboard (copy Muse prompts, upload clips, voice) -> Render -> QC -> Publish.
+Flow: Create -> Plan -> Storyboard (copy Muse prompts, upload a video or image per scene, voice) -> Render -> QC
+-> Publish.
 Deliberately plain: internal tool, one user, no timeline editor.
 """
 
@@ -13,11 +14,11 @@ import streamlit as st
 
 from factory import media
 from factory.config import get_settings
-from factory.pipeline import AUDIO_EXT, IMAGE_EXT, VIDEO_EXT, Factory
+from factory.pipeline import AUDIO_EXT, Factory
 from factory.publish import youtube
 from factory.qc import qc_warnings
 from factory.render import check_ready
-from factory.schema import Project
+from factory.schema import IMAGE_EXT, VIDEO_EXT, Project, SceneState
 
 st.set_page_config(page_title="AI Content Factory", page_icon="🎬", layout="wide")
 F = Factory()
@@ -41,6 +42,23 @@ def run(label: str, fn, *args, **kwargs):
     except Exception as e:  # noqa: BLE001 - surface every stage error to the user
         st.session_state["flash"] = ("error", f"{label} lỗi: {e}")
         return None
+
+
+def asset_caption(s: SceneState) -> str:
+    parts = [
+        f"Type: {'Image' if s.asset_type == 'image' else 'Video'}",
+        f"Source: {s.asset_source or 'unknown'}",
+        Path(str(s.asset_path)).name,
+    ]
+    if s.asset_width and s.asset_height:
+        parts.append(f"{s.asset_width}x{s.asset_height}")
+    if s.asset_duration:
+        parts.append(f"{s.asset_duration:.1f}s")
+    return " · ".join(parts)
+
+
+def exts(kind: str) -> list[str]:
+    return sorted(e.lstrip(".") for e in (VIDEO_EXT if kind == "Video" else IMAGE_EXT))
 
 
 @st.cache_data(ttl=300)
@@ -152,23 +170,35 @@ with tab_sb:
                 left, right = st.columns([3, 2])
                 with left:
                     narration = st.text_area("Narration", s.narration, key=f"n{pid}{s.order}", height=90)
-                    prompt = st.text_area("Video prompt (Muse)", s.video_prompt, key=f"v{pid}{s.order}", height=110)
+                    prompt = st.text_area("Visual prompt (Muse)", s.video_prompt, key=f"v{pid}{s.order}", height=110)
                     if st.button("Lưu scene", key=f"save{s.order}"):
                         run(f"Lưu scene {s.order}", F.edit_scene, pid, s.order, narration, prompt)
                         st.rerun()
-                    st.caption("Copy prompt (nút copy ở góc phải):")
+                    st.caption("Copy Muse Prompt (nút copy ở góc phải):")
                     st.code(s.video_prompt, language=None, wrap_lines=True)
                 with right:
-                    if s.clip_file:
-                        st.video(str(pdir / s.clip_file))
-                        st.caption(f"{s.clip_width}x{s.clip_height} · {s.clip_duration:.1f}s")
-                    clip = st.file_uploader(
-                        "Clip Muse (mp4/mov/webm) hoặc ảnh",
-                        key=f"c{pid}{s.order}",
-                        type=[e.lstrip(".") for e in VIDEO_EXT | IMAGE_EXT],
+                    st.markdown("**Visual Asset**")
+                    if s.asset_path:
+                        asset_file = pdir / s.asset_path
+                        if not asset_file.is_file():
+                            st.warning(f"File asset bị mất: {asset_file.name}")
+                        elif s.asset_type == "image":
+                            st.image(str(asset_file))
+                        else:
+                            st.video(str(asset_file))
+                        st.caption(asset_caption(s))
+                    kind = st.radio("Loại asset", ["Video", "Image"], horizontal=True, key=f"k{pid}{s.order}")
+                    asset = st.file_uploader(f"Upload {kind}", key=f"c{pid}{s.order}{kind}", type=exts(kind))
+                    source = st.selectbox(
+                        "Source",
+                        ["muse", "upload", "generated"] if kind == "Video" else ["upload", "generated"],
+                        key=f"src{pid}{s.order}{kind}",
                     )
-                    if clip and st.button("Gắn clip" if not s.clip_file else "Thay clip", key=f"ac{s.order}"):
-                        run(f"Gắn clip scene {s.order}", F.attach_clip, pid, s.order, save_upload(clip))
+                    if asset and st.button("Replace Asset" if s.asset_path else "Attach Asset", key=f"ac{s.order}"):
+                        run(f"Gắn asset scene {s.order}", F.attach_asset, pid, s.order, save_upload(asset), source)
+                        st.rerun()
+                    if s.asset_path and st.button("Remove Asset", key=f"rm{s.order}"):
+                        run(f"Xoá asset scene {s.order}", F.remove_asset, pid, s.order)
                         st.rerun()
                     if s.audio_file:
                         st.audio(str(pdir / s.audio_file))
@@ -218,21 +248,22 @@ with tab_render:
                 )
                 if p.render_stale:
                     st.warning("Asset đã đổi sau lần render cuối → Render lại.")
-                for w in qc_warnings(p, sb):
+                for w in qc_warnings(p, sb, pdir):
                     st.warning(w)
                 with open(pdir / r.file, "rb") as fh:
                     st.download_button("Tải final-short.mp4", fh, file_name=f"{pid}.mp4")
             st.subheader("Replace scene → Render again")
             st.caption(
-                "Chỉ thay clip của 1 scene. Không chạy lại planner, không tạo lại voice, các scene khác được reuse."
+                "Chỉ thay asset (video hoặc ảnh) của 1 scene. Không chạy lại planner, không tạo lại voice, "
+                "các scene khác được reuse."
             )
             q1, q2 = st.columns([1, 3])
             order = q1.selectbox("Scene", [s.order for s in sb.scenes], key=f"qc_scene{pid}")
-            new_clip = q2.file_uploader(
-                "Clip mới", key=f"qc_clip{pid}{order}", type=[e.lstrip(".") for e in VIDEO_EXT | IMAGE_EXT]
+            new_asset = q2.file_uploader(
+                "Asset mới (video hoặc ảnh)", key=f"qc_clip{pid}{order}", type=exts("Video") + exts("Image")
             )
-            if new_clip and st.button(f"Thay clip scene {order} & render lại", type="primary"):
-                if run(f"Thay clip scene {order}", F.attach_clip, pid, order, save_upload(new_clip)):
+            if new_asset and st.button(f"Thay asset scene {order} & render lại", type="primary"):
+                if run(f"Thay asset scene {order}", F.attach_asset, pid, order, save_upload(new_asset)):
                     run("Render lại", F.render, pid, save_upload(bgm) if bgm else None, vol)
                 st.rerun()
         muse = st.number_input(

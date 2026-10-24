@@ -36,7 +36,7 @@ def rendered(media_set, tmp_path_factory):
     f.generate_voice(pid)
     clips = [media_set["landscape_short"], media_set["portrait_long"], media_set["small_4x3"], media_set["image"]]
     for s in f.storyboard(pid).scenes:
-        f.attach_clip(pid, s.order, clips[s.order - 1])
+        f.attach_asset(pid, s.order, clips[s.order - 1])
     p = f.render(pid, media_set["music"])
     yield f, pid, p
     mp.undo()
@@ -57,8 +57,8 @@ def test_tc06_timing_follows_audio(rendered):
     total = sum(s.actual_audio_duration for s in sb.scenes)
     assert p.render.duration == pytest.approx(total, abs=0.25)
     # scene 1 clip (3s) shorter than its audio -> looped, scene 2 clip (14s) longer -> trimmed
-    assert sb.scene(1).clip_duration < sb.scene(1).actual_audio_duration
-    assert sb.scene(2).clip_duration > sb.scene(2).actual_audio_duration
+    assert sb.scene(1).asset_duration < sb.scene(1).actual_audio_duration
+    assert sb.scene(2).asset_duration > sb.scene(2).actual_audio_duration
 
 
 def test_subtitles_written(rendered):
@@ -79,11 +79,11 @@ def test_tc04_tc08_replace_one_scene_and_rerender(rendered, media_set):
     f, pid, first = rendered
     audio_before = {s.order: sha(f.store.path(pid, s.audio_file)) for s in f.storyboard(pid).scenes}
     final_before = sha(f.store.path(pid, first.render.file))
-    f.attach_clip(pid, 2, media_set["square"])
+    f.attach_asset(pid, 2, media_set["square"])
     assert f.store.get(pid).render_stale
     p = f.render(pid, media_set["music"])
     sb = f.storyboard(pid)
-    assert sb.scene(2).clip_width == 1080 and sb.scene(2).clip_height == 1080  # only scene 2 changed
+    assert sb.scene(2).asset_width == 1080 and sb.scene(2).asset_height == 1080  # only scene 2 changed
     assert {s.order: sha(f.store.path(pid, s.audio_file)) for s in sb.scenes} == audio_before
     assert p.render.render_count == 2 and p.render.reused_stages >= 9  # 3 scenes x 3 stages reused
     assert sha(f.store.path(pid, p.render.file)) != final_before
@@ -93,13 +93,13 @@ def test_tc04_tc08_replace_one_scene_and_rerender(rendered, media_set):
 def test_tc11_corrupt_clip_rejected_on_upload(rendered, media_set):
     f, pid, _ = rendered
     with pytest.raises(Exception, match="corrupt.mp4|unreadable"):
-        f.attach_clip(pid, 1, media_set["corrupt"])
+        f.attach_asset(pid, 1, media_set["corrupt"])
     assert f.store.get(pid).error
 
 
 def test_tc11_corrupt_clip_on_disk_fails_render_with_scene(rendered):
     f, pid, _ = rendered
-    clip = f.store.path(pid, f.storyboard(pid).scene(3).clip_file)
+    clip = f.store.path(pid, f.storyboard(pid).scene(3).asset_path)
     original = clip.read_bytes()
     clip.write_bytes(b"broken")
     try:
@@ -114,7 +114,7 @@ def test_render_refuses_missing_assets():
     f = Factory()
     pid = f.create_project("Not ready", 30).id
     f.plan(pid, MockPlanner())
-    with pytest.raises(RenderError, match="Scene 1: missing video clip"):
+    with pytest.raises(RenderError, match="Scene 1: missing visual asset"):
         f.render(pid)
 
 
@@ -124,6 +124,6 @@ def test_render_without_music(media_set):
     f.plan(pid, MockPlanner())
     f.generate_voice(pid)
     for s in f.storyboard(pid).scenes:
-        f.attach_clip(pid, s.order, media_set["portrait_short"])
+        f.attach_asset(pid, s.order, media_set["portrait_short"])
     p = f.render(pid)
     assert p.render.status == "done" and (p.render.width, p.render.height) == (1080, 1920)

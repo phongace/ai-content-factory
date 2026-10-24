@@ -13,12 +13,19 @@ from .config import Settings, get_settings
 from .planner import ContentPlanner, PlannerError, get_planner
 from .publish.base import Publisher, PublishRequest
 from .render import render as render_video
-from .schema import PlannerInput, Project, StoryboardFile, now_iso
+from .schema import (
+    ASSET_SOURCES,
+    AssetSource,
+    PlannerInput,
+    Project,
+    StoryboardFile,
+    asset_type_for,
+    now_iso,
+    supported_asset_types,
+)
 from .store import ProjectStore, scene_name
 from .voice import VoiceRequest, get_voice_provider, import_audio
 
-VIDEO_EXT = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
-IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp"}
 AUDIO_EXT = {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"}
 
 
@@ -104,7 +111,7 @@ class Factory:
                 raise
             sb = self.store.save_storyboard(pid, StoryboardFile.from_plan(result.storyboard))
             for d in ("audio", "scenes"):  # a new plan invalidates old per-scene assets
-                for f in self.store.path(pid, d).glob("scene_*"):
+                for f in self.store.path(pid, d).rglob("scene_*"):
                     f.unlink()
 
             def done(p: Project) -> None:
@@ -151,42 +158,77 @@ class Factory:
 
         self.store.update(pid, fn)
 
-    # ------------------------------------------------------------ clips (manual Muse import)
-    def attach_clip(self, pid: str, order: int, src: str | Path) -> None:
+    # ------------------------------------------------------------ visual assets (video or image per scene)
+    def _drop_scene_assets(self, pid: str, order: int, keep: Path | None = None) -> None:
+        scenes = self.store.path(pid, "scenes")
+        stale = [*scenes.glob(f"scene_{order:02d}.*"), *scenes.glob(f"normalized/scene_{order:02d}-*")]
+        for f in stale:
+            if f != keep:
+                f.unlink()
+
+    def attach_asset(self, pid: str, order: int, src: str | Path, source: str | None = None) -> None:
+        """Set or replace a scene's visual asset with a video (manual Muse clip) or a still image."""
         src = Path(src)
         ext = src.suffix.lower()
+        kind = asset_type_for(src)
         with self.stage(pid, "clips"):
             self.storyboard(pid).scene(order)  # validates order
-            dst = self.store.path(pid, f"scenes/{scene_name(order, 'mp4')}")
-            tmp = dst.with_name(f".incoming{ext or '.bin'}")
+            if kind is None:
+                raise ValueError(f"unsupported asset type '{ext}' ({supported_asset_types()})")
+            chosen: AssetSource | None
+            if source is None:
+                chosen = "muse" if kind == "video" else "upload"
+            else:
+                chosen = next((x for x in ASSET_SOURCES if x == source), None)
+                if chosen is None:
+                    raise ValueError(f"unknown asset source '{source}' (use {', '.join(ASSET_SOURCES)})")
+            scenes = self.store.path(pid, "scenes")
+            dst = scenes / scene_name(order, "mp4" if kind == "video" else ext)
+            tmp = scenes / f".incoming{ext}"
             shutil.copyfile(src, tmp)
             try:
-                if ext in IMAGE_EXT:
-                    media.image_to_clip(tmp, dst.with_name(".converted.mp4"))
-                    tmp.unlink()
-                    tmp = dst.with_name(".converted.mp4")
-                elif ext not in VIDEO_EXT:
-                    raise ValueError(f"unsupported clip type '{ext}' (use mp4/mov/webm or an image)")
-                info = media.probe(tmp)
-                if not info.has_video:
-                    raise ValueError("file has no video stream")
+                if kind == "image":
+                    img = media.probe_image(tmp)
+                    duration, width, height = None, img.width, img.height
+                else:
+                    info = media.probe(tmp)
+                    if not info.has_video:
+                        raise ValueError("file has no video stream")
+                    duration, width, height = info.duration, info.width, info.height
                 tmp.replace(dst)
             finally:
                 tmp.unlink(missing_ok=True)
+            self._drop_scene_assets(pid, order, keep=dst)
 
             def fn(sb: StoryboardFile) -> None:
                 s = sb.scene(order)
-                s.clip_file = f"scenes/{dst.name}"
-                s.clip_duration, s.clip_width, s.clip_height = info.duration, info.width, info.height
+                s.asset_type, s.asset_path, s.asset_source = kind, f"scenes/{dst.name}", chosen
+                s.asset_duration, s.asset_width, s.asset_height = duration, width, height
 
             self.store.update_storyboard(pid, fn)
 
             def proj(p: Project) -> None:
-                p.muse_clip_count += 1
-                p.cost.muse_estimated_cost = round(p.cost.muse_estimated_cost + self.s.muse_cost_per_clip, 6)
+                if chosen == "muse":
+                    p.muse_clip_count += 1
+                    p.cost.muse_estimated_cost = round(p.cost.muse_estimated_cost + self.s.muse_cost_per_clip, 6)
                 self._touch_assets(p)
 
             self.store.update(pid, proj)
+            self.store.log(pid, f"asset scene {order}: {kind} from {chosen} ({dst.name})")
+
+    def remove_asset(self, pid: str, order: int) -> None:
+        with self.stage(pid, "clips"):
+            self.storyboard(pid).scene(order)  # validates order
+            self._drop_scene_assets(pid, order)
+
+            def fn(sb: StoryboardFile) -> None:
+                s = sb.scene(order)
+                s.asset_type = s.asset_path = s.asset_source = None
+                s.asset_duration = s.asset_width = s.asset_height = None
+
+            self.store.update_storyboard(pid, fn)
+            self.store.update(pid, self._touch_assets)
+            self.store.log(pid, f"asset scene {order}: removed")
 
     # ------------------------------------------------------------ voice
     def generate_voice(self, pid: str, orders: list[int] | None = None, provider: str | None = None) -> None:

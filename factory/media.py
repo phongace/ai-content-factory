@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -22,7 +24,7 @@ def _tail(text: str, n: int = 6) -> str:
     return "\n".join(text.strip().splitlines()[-n:])
 
 
-def run_ffmpeg(args: list[str], timeout: float = 900, cwd: str | Path | None = None) -> None:
+def run_ffmpeg(args: list[str], timeout: float = 900, cwd: str | Path | None = None, strict: bool = False) -> None:
     s = get_settings()
     cmd = [s.ffmpeg, "-hide_banner", "-nostdin", "-y", "-loglevel", "error", *args]
     try:
@@ -31,7 +33,7 @@ def run_ffmpeg(args: list[str], timeout: float = 900, cwd: str | Path | None = N
         raise MediaError(f"ffmpeg not found ({s.ffmpeg}). Install it or set FFMPEG_PATH.") from e
     except subprocess.TimeoutExpired as e:
         raise MediaError(f"ffmpeg timed out after {timeout}s") from e
-    if r.returncode != 0:
+    if r.returncode != 0 or (strict and r.stderr.strip()):
         raise MediaError(f"ffmpeg failed: {_tail(r.stderr)}")
 
 
@@ -48,9 +50,8 @@ class Probe:
     fps: float | None
 
 
-def probe(path: str | Path) -> Probe:
+def _ffprobe(p: Path) -> dict:
     s = get_settings()
-    p = Path(path)
     if not p.is_file():
         raise MediaError(f"file not found: {p.name}")
     cmd = [s.ffprobe, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(p)]
@@ -60,16 +61,11 @@ def probe(path: str | Path) -> Probe:
         raise MediaError(f"ffprobe not found ({s.ffprobe}). Install it or set FFPROBE_PATH.") from e
     if r.returncode != 0:
         raise MediaError(f"unreadable media file {p.name}: {_tail(r.stderr, 2) or 'ffprobe error'}")
-    data = json.loads(r.stdout or "{}")
-    streams = data.get("streams", [])
-    v = next((x for x in streams if x.get("codec_type") == "video"), None)
-    a = next((x for x in streams if x.get("codec_type") == "audio"), None)
-    try:
-        duration = float(data.get("format", {}).get("duration") or (v or a or {}).get("duration") or 0)
-    except (TypeError, ValueError):
-        duration = 0.0
-    if duration <= 0:
-        raise MediaError(f"media file has no readable duration: {p.name}")
+    return json.loads(r.stdout or "{}")
+
+
+def _display_size(v: dict | None) -> tuple[int | None, int | None]:
+    """Width/height as displayed, i.e. swapped when the stream carries a 90/270 degree rotation."""
     w, h = (v or {}).get("width"), (v or {}).get("height")
     rot = 0
     if v:
@@ -79,6 +75,22 @@ def probe(path: str | Path) -> Probe:
                 rot = abs(int(sd["rotation"]))
     if rot in (90, 270) and w and h:
         w, h = h, w
+    return w, h
+
+
+def probe(path: str | Path) -> Probe:
+    p = Path(path)
+    data = _ffprobe(p)
+    streams = data.get("streams", [])
+    v = next((x for x in streams if x.get("codec_type") == "video"), None)
+    a = next((x for x in streams if x.get("codec_type") == "audio"), None)
+    try:
+        duration = float(data.get("format", {}).get("duration") or (v or a or {}).get("duration") or 0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    if duration <= 0:
+        raise MediaError(f"media file has no readable duration: {p.name}")
+    w, h = _display_size(v)
     fps = None
     if v and v.get("avg_frame_rate") and "/" in v["avg_frame_rate"]:
         num, den = v["avg_frame_rate"].split("/")
@@ -109,14 +121,61 @@ def to_wav(src: str | Path, dst: str | Path) -> None:
     run_ffmpeg(["-i", str(src), "-vn", "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le", str(dst)])
 
 
-def image_to_clip(image: str | Path, dst: str | Path, seconds: float = 6.0) -> None:
-    """Fallback asset (01_Flow step 5): still image -> short mp4 with slow zoom."""
-    frames = int(seconds * 30)
+@dataclass
+class ImageInfo:
+    width: int
+    height: int
+
+
+def probe_image(path: str | Path) -> ImageInfo:
+    """Size of a still image, after decoding it once: garbage and truncated files are rejected."""
+    p = Path(path)
+    w, h = _display_size(next((x for x in _ffprobe(p).get("streams", []) if x.get("codec_type") == "video"), None))
+    if not w or not h:
+        raise MediaError(f"not a readable image: {p.name}")
+    try:
+        run_ffmpeg(["-i", str(p), "-frames:v", "1", "-f", "null", "-"], timeout=60, strict=True)
+    except MediaError as e:
+        raise MediaError(f"corrupt or truncated image {p.name}: {e}") from e
+    return ImageInfo(w, h)
+
+
+def file_sha256(path: str | Path) -> str:
+    h = hashlib.sha256()
+    with Path(path).open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# Bump whenever image_to_clip changes what it writes: the version is part of the normalized-clip cache key.
+IMAGE_CLIP_VERSION = "img2clip-v1"
+IMAGE_ZOOM = 0.10  # total slow zoom-in across the clip, 10%
+
+
+def clip_frames(seconds: float, fps: int) -> int:
+    """Whole frames that cover `seconds` (the clip is at most one frame longer than the voice)."""
+    return max(1, math.ceil(round(seconds * fps, 3)))
+
+
+def image_to_clip(
+    image: str | Path, dst: str | Path, frames: int, width: int = 1080, height: int = 1920, fps: int = 30
+) -> None:
+    """Still image -> mp4 of exactly `frames` frames at `width`x`height`.
+
+    Cover-scale + centre-crop (never stretch), then a slow centred zoom-in. The image is first scaled to 2x so
+    zoompan crops at sub-pixel precision instead of stepping whole pixels.
+    """
+    w2, h2 = width * 2, height * 2
     vf = (
-        "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
-        f"zoompan=z='min(zoom+0.0008,1.12)':d={frames}:s=1080x1920:fps=30,format=yuv420p"
+        f"scale={w2}:{h2}:force_original_aspect_ratio=increase,crop={w2}:{h2},"
+        f"zoompan=z='1+{IMAGE_ZOOM}*on/{frames}':x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':d={frames}:s={width}x{height}:fps={fps},"
+        "setsar=1,format=yuv420p"
     )
-    run_ffmpeg(["-loop", "1", "-i", str(image), "-t", f"{seconds:.2f}", "-vf", vf, "-c:v", "libx264", str(dst)])
+    run_ffmpeg(
+        ["-i", str(image), "-vf", vf, "-frames:v", str(frames), "-an"]
+        + ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-r", str(fps), "-movflags", "+faststart", str(dst)]
+    )
 
 
 def preflight() -> dict:

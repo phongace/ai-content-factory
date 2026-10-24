@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from .render import inspect_asset
 from .schema import MAX_TOTAL, MIN_TOTAL, Project, StoryboardFile
 
 HARD_SCENE_LIMIT = 10.0
 
 
-def qc_warnings(p: Project, sb: StoryboardFile | None) -> list[str]:
+def qc_warnings(p: Project, sb: StoryboardFile | None, project_dir: Path | None = None) -> list[str]:
+    """`project_dir` enables the file checks (missing, unsupported or corrupt visual asset)."""
     out: list[str] = []
     if sb is None:
         return out
@@ -17,8 +21,12 @@ def qc_warnings(p: Project, sb: StoryboardFile | None) -> list[str]:
             out.append(f"Scene {s.order}: voice is {s.actual_audio_duration:.1f}s (>10s), shorten the narration")
         if s.audio_stale:
             out.append(f"Scene {s.order}: narration edited after voice generation")
-        if s.clip_duration and s.actual_audio_duration and s.clip_duration < s.actual_audio_duration * 0.5:
-            out.append(f"Scene {s.order}: clip ({s.clip_duration:.1f}s) is much shorter than voice, it will loop")
+        if not s.asset_path:
+            out.append(f"Scene {s.order}: no visual asset yet")
+        elif project_dir is not None and (why := inspect_asset(project_dir, s)):
+            out.append(f"Scene {s.order}: {why}")
+        if s.asset_duration and s.actual_audio_duration and s.asset_duration < s.actual_audio_duration * 0.5:
+            out.append(f"Scene {s.order}: clip ({s.asset_duration:.1f}s) is much shorter than voice, it will loop")
     if durations and len(durations) == len(sb.scenes):
         total = sum(durations)
         if not MIN_TOTAL <= total <= MAX_TOTAL:

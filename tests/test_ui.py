@@ -30,7 +30,7 @@ def test_planned_project_page_and_youtube_not_configured():
     assert at.header[0].value == "UI smoke"
     assert len(at.text_area) >= 8  # narration + prompt per scene
     assert any("YouTube not configured" in i.value for i in at.info)
-    assert any("missing video clip" in w.value for w in at.warning)
+    assert any("missing visual asset" in w.value for w in at.warning)
 
 
 def test_generate_plan_button():

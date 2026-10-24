@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -15,6 +16,27 @@ TOTAL_TOLERANCE = 0.25  # planned total must be within ±25% of the requested du
 Language = Literal["vi", "en"]
 Status = Literal["draft", "planned", "assets", "rendering", "rendered", "published", "error"]
 Stage = Literal["created", "planning", "storyboard", "voice", "clips", "subtitle", "render", "qc", "publish"]
+AssetType = Literal["video", "image"]
+AssetSource = Literal["muse", "upload", "generated", "mock"]
+ASSET_SOURCES: tuple[AssetSource, ...] = ("muse", "upload", "generated", "mock")
+
+VIDEO_EXT = frozenset({".mp4", ".mov", ".m4v", ".webm", ".mkv"})
+IMAGE_EXT = frozenset({".png", ".jpg", ".jpeg", ".webp"})
+
+
+def asset_type_for(path: str | Path) -> AssetType | None:
+    ext = Path(path).suffix.lower()
+    if ext in VIDEO_EXT:
+        return "video"
+    if ext in IMAGE_EXT:
+        return "image"
+    return None
+
+
+def supported_asset_types() -> str:
+    video = ", ".join(sorted(e.lstrip(".") for e in VIDEO_EXT))
+    image = ", ".join(sorted(e.lstrip(".") for e in IMAGE_EXT))
+    return f"video: {video}; image: {image}"
 
 
 def now_iso() -> str:
@@ -81,19 +103,45 @@ class Storyboard(BaseModel):
             )
 
 
+_LEGACY_CLIP_FIELDS = {
+    "clip_file": "asset_path",
+    "clip_duration": "asset_duration",
+    "clip_width": "asset_width",
+    "clip_height": "asset_height",
+}
+
+
 class SceneState(BaseModel):
     order: int
     target_duration: float
     narration: str
     video_prompt: str
-    clip_file: str | None = None  # relative to project dir
-    clip_duration: float | None = None
-    clip_width: int | None = None
-    clip_height: int | None = None
+    asset_type: AssetType | None = None
+    asset_path: str | None = None  # relative to project dir
+    asset_source: AssetSource | None = None
+    asset_duration: float | None = None  # videos only
+    asset_width: int | None = None
+    asset_height: int | None = None
     audio_file: str | None = None
     actual_audio_duration: float | None = None  # source of truth for render timing
     audio_source: str | None = None
     audio_narration: str | None = None  # narration text the audio was made from
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_clip_fields(cls, data: object) -> object:
+        """Projects saved before image assets existed stored a video-only `clip_*` block."""
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        for old, new in _LEGACY_CLIP_FIELDS.items():
+            if old in data:
+                value = data.pop(old)
+                if data.get(new) is None:
+                    data[new] = value
+        if data.get("asset_path") and not data.get("asset_type"):
+            data["asset_type"] = asset_type_for(data["asset_path"])
+        return data
 
     @property
     def audio_stale(self) -> bool:

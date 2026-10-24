@@ -11,6 +11,7 @@ from . import media
 from .config import get_settings
 from .pipeline import Factory
 from .qc import qc_warnings
+from .schema import ASSET_SOURCES
 
 
 def _print(obj) -> None:
@@ -59,8 +60,9 @@ def cmd_voice(a, f: Factory) -> int:
 
 
 def cmd_clip(a, f: Factory) -> int:
-    f.attach_clip(a.project, a.scene, a.file)
-    print(f"scene {a.scene}: clip attached")
+    f.attach_asset(a.project, a.scene, a.file, a.source)
+    s = f.storyboard(a.project).scene(a.scene)
+    print(f"scene {a.scene}: {s.asset_type} asset attached (source: {s.asset_source})")
     return 0
 
 
@@ -98,7 +100,7 @@ def cmd_publish(a, f: Factory) -> int:
 
 
 def cmd_demo(a, f: Factory) -> int:
-    """Topic -> mock plan -> mock voice -> synthetic clips -> render. Proves the pipeline offline."""
+    """Topic -> mock plan -> mock voice -> synthetic video and image scenes -> render. Proves the pipeline offline."""
     from .fixtures import make_set
     from .planner import MockPlanner
 
@@ -106,23 +108,27 @@ def cmd_demo(a, f: Factory) -> int:
     p = f.create_project(a.topic, 30, a.language)
     f.plan(p.id, MockPlanner())
     f.generate_voice(p.id, provider=a.provider)
-    clips = [
+    visuals = [
         fx["landscape_short"],
+        fx["portrait_image"],
         fx["portrait_long"],
-        fx["small_4x3"],
         fx["image"],
         fx["square"],
-        fx["landscape_long"],
+        fx["landscape_image"],
     ]
     for s in f.storyboard(p.id).scenes:
-        f.attach_clip(p.id, s.order, clips[(s.order - 1) % len(clips)])
+        f.attach_asset(p.id, s.order, visuals[(s.order - 1) % len(visuals)], "mock")
     p = f.render(p.id, fx["music"] if a.music else None)
     _print(
         {
             "project": p.id,
             **p.render.model_dump(),
             "file": str(f.store.path(p.id, p.render.file or "renders/final-short.mp4")),
-            "qc_warnings": qc_warnings(f.store.get(p.id), f.storyboard(p.id)),
+            "assets": [
+                {"scene": s.order, "type": s.asset_type, "source": s.asset_source, "path": s.asset_path}
+                for s in f.storyboard(p.id).scenes
+            ],
+            "qc_warnings": qc_warnings(f.store.get(p.id), f.storyboard(p.id), f.store.dir(p.id)),
         }
     )
     return 0
@@ -145,10 +151,11 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("--scene", type=int)
     v.add_argument("--provider", choices=["mock", "edge", "voicestudio"])
     v.add_argument("--file", type=Path)
-    c = sub.add_parser("clip", help="attach a Muse clip (or image) to a scene")
+    c = sub.add_parser("clip", help="attach a video (Muse clip) or an image (jpg/png/webp) to a scene")
     c.add_argument("project")
     c.add_argument("scene", type=int)
     c.add_argument("file", type=Path)
+    c.add_argument("--source", choices=ASSET_SOURCES, help="default: muse for a video, upload for an image")
     r = sub.add_parser("render")
     r.add_argument("project")
     r.add_argument("--bgm", type=Path)

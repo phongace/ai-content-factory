@@ -67,7 +67,7 @@ def isolated_env(tmp_path, monkeypatch):
 
 @pytest.fixture(scope="session")
 def media_set() -> dict[str, Path]:
-    marker = FIXTURE_DIR / ".complete"
+    marker = FIXTURE_DIR / ".complete-v2"
     if not marker.exists():
         make_set(FIXTURE_DIR)
         marker.write_text("ok")
@@ -79,6 +79,9 @@ def media_set() -> dict[str, Path]:
         "landscape_long": FIXTURE_DIR / "landscape_12s.mp4",
         "portrait_short": FIXTURE_DIR / "portrait_2s.mp4",
         "image": FIXTURE_DIR / "still.png",
+        "portrait_image": FIXTURE_DIR / "portrait_800x1200.jpg",
+        "landscape_image": FIXTURE_DIR / "landscape_1600x900.jpg",
         "music": FIXTURE_DIR / "music.mp3",
         "corrupt": FIXTURE_DIR / "corrupt.mp4",
+        "corrupt_image": FIXTURE_DIR / "corrupt.jpg",
     }
