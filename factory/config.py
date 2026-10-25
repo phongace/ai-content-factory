@@ -58,6 +58,7 @@ class Settings:
     voicestudio_voice: str
     voicestudio_model: str
     voicestudio_api_key: str
+    voicestudio_timeout: float
     voice_cost_per_second: float
     muse_cost_per_clip: float
     bgm_file: str | None
@@ -108,6 +109,8 @@ def get_settings() -> Settings:
         voicestudio_voice=_env("VOICESTUDIO_VOICE", "default") or "default",
         voicestudio_model=_env("VOICESTUDIO_MODEL", "tts-1") or "tts-1",
         voicestudio_api_key=_env("VOICESTUDIO_API_KEY", "local") or "local",
+        # CPU-only backends synthesize ~30x slower than real time, so one scene can take minutes
+        voicestudio_timeout=_num("VOICESTUDIO_TIMEOUT", 900.0),
         voice_cost_per_second=_num("VOICE_COST_PER_SECOND", 0.0),
         muse_cost_per_clip=_num("MUSE_COST_PER_CLIP", 0.0),
         bgm_file=_env("BGM_FILE"),

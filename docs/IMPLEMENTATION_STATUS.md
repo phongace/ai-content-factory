@@ -13,7 +13,7 @@ Kiểm chứng: 102 test tự động pass (74 logic + 28 render thật bằng F
 | P0-03 | DONE | `project.json` + `storyboard.json`, atomic write, reload sau restart, list, bỏ qua folder hỏng | | |
 | P0-04 | PARTIAL | Schema + validate (4–6 scene, 5–9s, tổng ±25%) + retry gửi lỗi về cho Claude (tool call ép JSON). Test bằng HTTP giả + MockPlanner | Chưa có API key để chạy thật | Điền `ANTHROPIC_API_KEY`, chạy 3 topic |
 | P0-05 | PARTIAL | Prompt + title/description/hashtags trong cùng 1 call | Cần đánh giá chất lượng output thật | Duyệt 3 storyboard thật |
-| P0-06 | BLOCKED_EXTERNAL | Adapter VoiceStudio (OpenAI-compatible, dùng lại transport của MPT), báo lỗi rõ khi server tắt (TC-10 pass). Upload audio tay chạy được | VoiceStudio chưa cài | Xem MANUAL_SETUP §1 |
+| P0-06 | DONE (kỹ thuật) | Adapter VoiceStudio gọi thẳng `POST /v1/audio/speech` (gửi `language` của scene, báo đúng lỗi 401/403/409/5xx, timeout `VOICESTUDIO_TIMEOUT`). Upload audio tay chạy được | Chạy thật 2026-10-25: engine `omnivoice`, 4 scene tiếng Việt 5.6-6.1 s, 738 s trên CPU (~31x thời gian thực). CHƯA dùng cho video kiếm tiền: trọng số OmniVoice là CC-BY-NC | Cần engine/giọng có license thương mại (xem MANUAL_SETUP §1) |
 | P0-07 | DONE | ffprobe đo `actual_audio_duration` từng scene, lưu cùng narration gốc để phát hiện voice cũ | | |
 | P0-08 | DONE | Storyboard UI: sửa narration/prompt, nút copy prompt, mỗi scene có Visual Asset là video hoặc ảnh (Attach/Replace/Remove, hiện Type/Source/tên file/preview) | | |
 | P0-09 | DONE | Phụ đề theo scene từ narration + duration thật, không overlap, không vượt ranh giới scene, ASS + SRT | | |

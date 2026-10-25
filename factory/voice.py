@@ -81,9 +81,22 @@ class EdgeVoiceProvider:
             media.to_wav(mp3, req.output)
 
 
+def _api_error(r: requests.Response) -> str:
+    """VoiceStudio answers with OpenAI's {"error": {"message": ...}} shape; fall back to the raw body."""
+    try:
+        body = r.json()
+    except ValueError:
+        return r.text[:300].strip()
+    err = body.get("error") if isinstance(body, dict) else None
+    if isinstance(err, dict) and isinstance(err.get("message"), str):
+        return err["message"]
+    return str(body)[:300]
+
+
 class VoiceStudioProvider:
-    """VoiceStudio local server, OpenAI-compatible /v1/audio/speech. Reuses MPT's
-    `_openai_compatible_tts` transport (same one MPT uses for Kokoro/Chatterbox)."""
+    """VoiceStudio local server, OpenAI-compatible POST /v1/audio/speech, called directly so the
+    scene language is sent and server errors (401, 403 licence, 409 ambiguous voice, 503 loading)
+    reach the user instead of a generic failure."""
 
     name = "voicestudio"
 
@@ -101,27 +114,36 @@ class VoiceStudioProvider:
 
     def generate(self, req: VoiceRequest) -> None:
         self.ping()
-        from .mpt_bridge import voice_module
-
-        voice = voice_module()
-        with tempfile.TemporaryDirectory() as tmp:
-            out = Path(tmp) / "voice.mp3"
-            sub = voice._openai_compatible_tts(
-                "voicestudio",
-                self.s.voicestudio_base_url,
-                self.s.voicestudio_api_key,
-                self.s.voicestudio_model,
-                self.s.voicestudio_voice,
-                req.text,
-                1.0,
-                str(out),
+        what = f"voice={self.s.voicestudio_voice}, model={self.s.voicestudio_model}, language={req.language}"
+        try:
+            r = requests.post(
+                f"{self.s.voicestudio_base_url}/audio/speech",
+                headers={"Authorization": f"Bearer {self.s.voicestudio_api_key}"},
+                json={
+                    "model": self.s.voicestudio_model,
+                    "voice": self.s.voicestudio_voice,
+                    "input": req.text,
+                    "response_format": "wav",
+                    "language": req.language,
+                },
+                timeout=self.s.voicestudio_timeout,
             )
-            # MPT returns None on failure instead of raising; turn it into a clear stage error (TC-10).
-            if sub is None or not out.is_file() or out.stat().st_size == 0:
-                raise VoiceError(
-                    f"VoiceStudio returned no audio (voice={self.s.voicestudio_voice}, "
-                    f"model={self.s.voicestudio_model}). Check the voice id/engine in VoiceStudio, then retry."
-                )
+        except requests.Timeout as e:
+            raise VoiceError(
+                f"VoiceStudio did not answer within {self.s.voicestudio_timeout:.0f}s ({what}). "
+                "CPU synthesis is slow: raise VOICESTUDIO_TIMEOUT or use a smaller engine, then retry."
+            ) from e
+        except requests.RequestException as e:
+            raise VoiceError(f"VoiceStudio request failed ({what}): {type(e).__name__}, retry") from e
+        if r.status_code == 401:
+            raise VoiceError("VoiceStudio rejected the API key (401): set VOICESTUDIO_API_KEY in .env.local")
+        if r.status_code != 200:
+            raise VoiceError(f"VoiceStudio error {r.status_code} ({what}): {_api_error(r)}")
+        if not r.content:
+            raise VoiceError(f"VoiceStudio returned no audio ({what}), retry")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "voice.wav"
+            out.write_bytes(r.content)
             media.to_wav(out, req.output)
 
 
