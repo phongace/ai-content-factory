@@ -9,7 +9,7 @@ uv sync
 cp .env.example .env.local      # fill in what you have, everything is optional
 uv run factory preflight
 uv run factory demo --music     # offline end-to-end with synthetic media
-uv run streamlit run ui/app.py  # UI at http://localhost:8501
+uv run streamlit run ui/studio.py  # UI at http://localhost:8501
 ```
 
 FFmpeg must be built with libass (the `ass` filter burns the captions). Homebrew core `ffmpeg` may lack it

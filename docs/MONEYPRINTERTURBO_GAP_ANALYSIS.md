@@ -124,7 +124,7 @@ ai-content-factory/
     render.py               storyboard → manifest → mpt VideoProject.create_revision/render → final pass (ass + ducking + loudnorm)
     publish/youtube.py      Publisher interface + YouTubePublisher + MockPublisher
     cost.py
-  ui/app.py                 Streamlit: Projects, Storyboard, Voice, Render/QC, Publish
+  ui/studio.py                 Streamlit: Projects, Storyboard, Voice, Render/QC, Publish
   tests/                    pytest: planner validation, store, subtitle merge, render fixtures, mock publisher
   data/                     gitignored
 ```

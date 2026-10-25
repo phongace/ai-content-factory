@@ -9,7 +9,7 @@ from streamlit.testing.v1 import AppTest
 from factory.pipeline import Factory
 from factory.planner import MockPlanner
 
-APP = str(Path(__file__).resolve().parent.parent / "ui" / "app.py")
+APP = str(Path(__file__).resolve().parent.parent / "ui" / "studio.py")
 
 
 def test_empty_state():

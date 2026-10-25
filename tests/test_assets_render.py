@@ -26,7 +26,7 @@ from factory.schema import SceneState
 
 pytestmark = pytest.mark.media
 
-APP = str(Path(__file__).resolve().parent.parent / "ui" / "app.py")
+APP = str(Path(__file__).resolve().parent.parent / "ui" / "studio.py")
 FPS = 30
 
 

@@ -19,7 +19,7 @@ from factory.publish.base import build_description, clean_title
 from factory.render import FONTS_DIR, RenderError, RenderOutput
 from factory.schema import SceneState, now_iso
 
-APP = str(Path(__file__).resolve().parent.parent / "ui" / "app.py")
+APP = str(Path(__file__).resolve().parent.parent / "ui" / "studio.py")
 
 
 def mark_rendered(f: Factory, pid: str) -> None:

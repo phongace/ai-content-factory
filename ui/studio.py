@@ -1,4 +1,4 @@
-"""Streamlit UI for the POC: `uv run streamlit run ui/app.py`.
+"""Streamlit UI for the POC: `uv run streamlit run ui/studio.py`.
 
 Flow: Create -> Plan -> Storyboard (copy Muse prompts, upload a video or image per scene, voice) -> Render -> QC
 -> Publish.
@@ -80,6 +80,73 @@ def bump(slot: str) -> None:
     st.session_state[f"nonce-{slot}"] = nonce(slot) + 1
 
 
+def act(label: str, fn, *args, **kwargs) -> None:
+    run(label, fn, *args, **kwargs)
+
+
+def act_save_scene(pid: str, order: int) -> None:
+    ss = st.session_state
+    run(f"Lưu scene {order}", F.edit_scene, pid, order, ss[f"n{pid}{order}"], ss[f"v{pid}{order}"])
+
+
+def act_save_metadata(pid: str) -> None:
+    ss = st.session_state
+    run("Lưu metadata", F.edit_metadata, pid, ss[f"mt{pid}"], ss[f"md{pid}"], ss[f"mh{pid}"].split())
+
+
+def act_generate_voice(pid: str, orders: list[int] | None) -> None:
+    label = "Generate voice" if orders is None else f"Voice scene {orders[0]}"
+    run(label, F.generate_voice, pid, orders, st.session_state[f"prov{pid}"])
+
+
+def act_attach(pid: str, order: int, upload_key: str, source_key: str, slot: str) -> None:
+    upload = st.session_state.get(upload_key)
+    if upload is None:
+        return
+    if run(f"Gắn asset scene {order}", F.attach_asset, pid, order, save_upload(upload), st.session_state[source_key]):
+        bump(slot)
+
+
+def act_import_voice(pid: str, order: int, upload_key: str) -> None:
+    upload = st.session_state.get(upload_key)
+    if upload is not None:
+        run(f"Import voice scene {order}", F.import_voice, pid, order, save_upload(upload))
+
+
+def render_with_music(label: str, pid: str, slot: str) -> None:
+    ss = st.session_state
+    bgm = ss.get(f"{slot}{nonce(slot)}")
+    no_bgm = bool(ss.get(f"nobgm{slot}{nonce(slot)}"))
+    if run(label, F.render, pid, save_upload(bgm) if bgm else None, ss[f"vol{pid}"], no_bgm=no_bgm):
+        bump(slot)
+
+
+def act_qc_replace(pid: str, order: int, upload_key: str, source_key: str, qc_slot: str, bgm_slot: str) -> None:
+    upload = st.session_state.get(upload_key)
+    if upload is None:
+        return
+    if run(f"Thay asset scene {order}", F.attach_asset, pid, order, save_upload(upload), st.session_state[source_key]):
+        bump(qc_slot)
+        render_with_music("Render lại", pid, bgm_slot)
+
+
+def act_connect() -> None:
+    run("Kết nối YouTube", youtube.connect, S)
+    youtube_status.clear()
+
+
+def act_upload(pid: str, force: bool) -> None:
+    run(
+        "Upload YouTube",
+        F.publish,
+        pid,
+        youtube.YouTubePublisher(S),
+        st.session_state[f"privacy{pid}"],
+        force=force,
+    )
+    youtube_status.clear()
+
+
 # ---------------------------------------------------------------- sidebar
 with st.sidebar:
     st.title("🎬 Content Factory")
@@ -148,9 +215,12 @@ tab_sb, tab_render, tab_pub, tab_log = st.tabs(["1 · Storyboard", "2 · Render 
 # ---------------------------------------------------------------- storyboard
 with tab_sb:
     cols = st.columns([1, 1, 2])
-    if cols[0].button("Generate plan" if sb is None else "Re-plan (xoá clip/voice cũ)", type="primary"):
-        run("Generate plan", F.plan, pid)
-        st.rerun()
+    cols[0].button(
+        "Generate plan" if sb is None else "Re-plan (xoá clip/voice cũ)",
+        type="primary",
+        on_click=act,
+        args=("Generate plan", F.plan, pid),
+    )
     if sb is not None:
         provider = cols[1].selectbox(
             "Voice provider",
@@ -158,21 +228,18 @@ with tab_sb:
             index=["mock", "edge", "voicestudio"].index(S.voice_provider)
             if S.voice_provider in ("mock", "edge", "voicestudio")
             else 0,
+            key=f"prov{pid}",
         )
-        if cols[2].button("Generate voice cho TẤT CẢ scene"):
-            run("Generate voice", F.generate_voice, pid, None, provider)
-            st.rerun()
+        cols[2].button("Generate voice cho TẤT CẢ scene", on_click=act_generate_voice, args=(pid, None))
         if provider == "edge":
             st.warning("Edge TTS chỉ để test, không dùng cho video monetize (license không rõ).")
 
         with st.expander("YouTube metadata", expanded=False):
-            title = st.text_input("Title", sb.title, max_chars=100)
-            desc = st.text_area("Description", sb.description)
-            tags = st.text_input("Hashtags", " ".join(sb.hashtags))
+            st.text_input("Title", sb.title, max_chars=100, key=f"mt{pid}")
+            st.text_area("Description", sb.description, key=f"md{pid}")
+            st.text_input("Hashtags", " ".join(sb.hashtags), key=f"mh{pid}")
             st.caption(f"Hook: {sb.hook}")
-            if st.button("Lưu metadata"):
-                run("Lưu metadata", F.edit_metadata, pid, title, desc, tags.split())
-                st.rerun()
+            st.button("Lưu metadata", on_click=act_save_metadata, args=(pid,))
 
         total_audio = sum(s.actual_audio_duration or 0 for s in sb.scenes)
         st.caption(
@@ -192,11 +259,9 @@ with tab_sb:
                 st.markdown(head)
                 left, right = st.columns([3, 2])
                 with left:
-                    narration = st.text_area("Narration", s.narration, key=f"n{pid}{s.order}", height=90)
-                    prompt = st.text_area("Visual prompt (Muse)", s.video_prompt, key=f"v{pid}{s.order}", height=110)
-                    if st.button("Lưu scene", key=f"save{s.order}"):
-                        run(f"Lưu scene {s.order}", F.edit_scene, pid, s.order, narration, prompt)
-                        st.rerun()
+                    st.text_area("Narration", s.narration, key=f"n{pid}{s.order}", height=90)
+                    st.text_area("Visual prompt (Muse)", s.video_prompt, key=f"v{pid}{s.order}", height=110)
+                    st.button("Lưu scene", key=f"save{s.order}", on_click=act_save_scene, args=(pid, s.order))
                     st.caption("Copy Muse Prompt (nút copy ở góc phải):")
                     st.code(s.video_prompt, language=None, wrap_lines=True)
                 with right:
@@ -212,37 +277,47 @@ with tab_sb:
                         st.caption(asset_caption(s))
                     kind = st.radio("Loại asset", ["Video", "Image"], horizontal=True, key=f"k{pid}{s.order}")
                     asset_slot = f"c{pid}{s.order}"
-                    asset = st.file_uploader(
-                        f"Upload {kind}", key=f"{asset_slot}{kind}{nonce(asset_slot)}", type=exts(kind)
-                    )
-                    source = st.selectbox(
+                    upload_key = f"{asset_slot}{kind}{nonce(asset_slot)}"
+                    source_key = f"src{pid}{s.order}{kind}"
+                    asset = st.file_uploader(f"Upload {kind}", key=upload_key, type=exts(kind))
+                    st.selectbox(
                         "Source",
                         ["muse", "upload", "generated"] if kind == "Video" else ["upload", "generated"],
-                        key=f"src{pid}{s.order}{kind}",
+                        key=source_key,
                     )
-                    if asset and st.button("Replace Asset" if s.asset_path else "Attach Asset", key=f"ac{s.order}"):
-                        if run(f"Gắn asset scene {s.order}", F.attach_asset, pid, s.order, save_upload(asset), source):
-                            bump(asset_slot)
-                        st.rerun()
-                    if s.asset_path and st.button("Remove Asset", key=f"rm{s.order}"):
-                        run(f"Xoá asset scene {s.order}", F.remove_asset, pid, s.order)
-                        st.rerun()
+                    if asset:
+                        st.button(
+                            "Replace Asset" if s.asset_path else "Attach Asset",
+                            key=f"ac{s.order}",
+                            on_click=act_attach,
+                            args=(pid, s.order, upload_key, source_key, asset_slot),
+                        )
+                    if s.asset_path:
+                        st.button(
+                            "Remove Asset",
+                            key=f"rm{s.order}",
+                            on_click=act,
+                            args=(f"Xoá asset scene {s.order}", F.remove_asset, pid, s.order),
+                        )
                     if s.audio_file:
                         st.audio(str(pdir / s.audio_file))
                         st.caption(f"voice: {s.audio_source}")
                     vc1, vc2 = st.columns(2)
-                    if vc1.button("Tạo voice", key=f"gv{s.order}"):
-                        run(f"Voice scene {s.order}", F.generate_voice, pid, [s.order], provider)
-                        st.rerun()
+                    vc1.button("Tạo voice", key=f"gv{s.order}", on_click=act_generate_voice, args=(pid, [s.order]))
+                    audio_key = f"a{pid}{s.order}"
                     audio = vc2.file_uploader(
                         "hoặc upload audio",
-                        key=f"a{pid}{s.order}",
+                        key=audio_key,
                         type=[e.lstrip(".") for e in AUDIO_EXT],
                         label_visibility="collapsed",
                     )
-                    if audio and st.button("Dùng audio này", key=f"ua{s.order}"):
-                        run(f"Import voice scene {s.order}", F.import_voice, pid, s.order, save_upload(audio))
-                        st.rerun()
+                    if audio:
+                        st.button(
+                            "Dùng audio này",
+                            key=f"ua{s.order}",
+                            on_click=act_import_voice,
+                            args=(pid, s.order, audio_key),
+                        )
 
 # ---------------------------------------------------------------- render & QC
 with tab_render:
@@ -254,26 +329,23 @@ with tab_render:
             st.warning(msg)
         rc1, rc2 = st.columns(2)
         bgm_slot = f"bgm{pid}"
-        bgm = rc1.file_uploader(
+        rc1.file_uploader(
             "Nhạc nền mới (tuỳ chọn, royalty-free, để trống = giữ nhạc hiện tại)",
             type=["mp3", "wav", "m4a", "aac"],
             key=f"{bgm_slot}{nonce(bgm_slot)}",
         )
-        no_music = (
-            rc1.checkbox("Bỏ nhạc nền", key=f"nobgm{bgm_slot}{nonce(bgm_slot)}", disabled=p.bgm is None)
-            and p.bgm is not None
-        )
+        rc1.checkbox("Bỏ nhạc nền", key=f"nobgm{bgm_slot}{nonce(bgm_slot)}", disabled=p.bgm is None)
         vol_default = float(p.bgm.volume if p.bgm else S.bgm_volume)
-        vol = rc2.slider("BGM volume", 0.0, max(0.6, vol_default), vol_default, 0.05)
+        rc2.slider("BGM volume", 0.0, max(0.6, vol_default), vol_default, 0.05, key=f"vol{pid}")
         rc2.caption(f"Nhạc nền hiện tại: {Path(p.bgm.file).name}" if p.bgm else "Chưa có nhạc nền")
 
-        def render_with_music(label: str) -> None:
-            if run(label, F.render, pid, save_upload(bgm) if bgm else None, vol, no_bgm=no_music):
-                bump(bgm_slot)
-
-        if st.button("Render", type="primary", disabled=bool(problems)):
-            render_with_music("Render")
-            st.rerun()
+        st.button(
+            "Render",
+            type="primary",
+            disabled=bool(problems),
+            on_click=render_with_music,
+            args=("Render", pid, bgm_slot),
+        )
 
         r = p.render
         if r.status == "error":
@@ -303,31 +375,34 @@ with tab_render:
             q1, q2 = st.columns([1, 3])
             order = q1.selectbox("Scene", [s.order for s in sb.scenes], key=f"qc_scene{pid}")
             qc_slot = f"qc{pid}{order}"
+            qc_upload_key = f"qc_clip{pid}{order}{nonce(qc_slot)}"
             new_asset = q2.file_uploader(
                 "Asset mới (video hoặc ảnh)",
-                key=f"qc_clip{pid}{order}{nonce(qc_slot)}",
+                key=qc_upload_key,
                 type=exts("Video") + exts("Image"),
             )
             new_kind = asset_type_for(new_asset.name) if new_asset else None
-            new_source = q1.selectbox(
+            qc_source_key = f"qc_src{pid}{order}{new_kind}"
+            q1.selectbox(
                 "Source",
                 ["muse", "upload", "generated"] if new_kind == "video" else ["upload", "generated"],
-                key=f"qc_src{pid}{order}{new_kind}",
+                key=qc_source_key,
             )
-            if new_asset and st.button(f"Thay asset scene {order} & render lại", type="primary"):
-                if run(f"Thay asset scene {order}", F.attach_asset, pid, order, save_upload(new_asset), new_source):
-                    bump(qc_slot)
-                    render_with_music("Render lại")
-                st.rerun()
+            if new_asset:
+                st.button(
+                    f"Thay asset scene {order} & render lại",
+                    type="primary",
+                    on_click=act_qc_replace,
+                    args=(pid, order, qc_upload_key, qc_source_key, qc_slot, bgm_slot),
+                )
         muse = st.number_input(
             "Chi phí Muse thực tế cho video này (USD)",
             min_value=0.0,
             value=float(p.cost.muse_estimated_cost),
             step=0.05,
         )
-        if muse != p.cost.muse_estimated_cost and st.button("Lưu chi phí Muse"):
-            run("Lưu chi phí", F.set_muse_cost, pid, muse)
-            st.rerun()
+        if muse != p.cost.muse_estimated_cost:
+            st.button("Lưu chi phí Muse", on_click=act, args=("Lưu chi phí", F.set_muse_cost, pid, muse))
 
 # ---------------------------------------------------------------- publish
 with tab_pub:
@@ -340,21 +415,21 @@ with tab_pub:
     else:
         if yt == "not_connected":
             st.warning("Chưa kết nối kênh (hoặc token đã hết hạn/bị thu hồi): bấm Connect YouTube.")
-        if st.button("Connect YouTube (mở trình duyệt)"):
-            run("Kết nối YouTube", youtube.connect, S)
-            youtube_status.clear()
-            st.rerun()
-        privacy = st.radio("Privacy", ["private", "unlisted"], horizontal=True)
+        st.button("Connect YouTube (mở trình duyệt)", on_click=act_connect)
+        st.radio("Privacy", ["private", "unlisted"], horizontal=True, key=f"privacy{pid}")
         st.caption("Dự án Google API chưa được xác minh sẽ bị YouTube ép video về private, kể cả khi chọn unlisted.")
         force = bool(p.youtube_video_id) and st.checkbox(
             "Upload lại (tạo thêm một video mới trên YouTube)", key=f"reupload-{p.youtube_video_id}"
         )
         already_uploaded = bool(p.youtube_video_id) and not force
         can_upload = yt == "connected" and p.render.status == "done" and not already_uploaded
-        if st.button("Upload lên YouTube", type="primary", disabled=not can_upload):
-            run("Upload YouTube", F.publish, pid, youtube.YouTubePublisher(S), privacy, force=force)
-            youtube_status.clear()
-            st.rerun()
+        st.button(
+            "Upload lên YouTube",
+            type="primary",
+            disabled=not can_upload,
+            on_click=act_upload,
+            args=(pid, force),
+        )
     if p.youtube_url:
         st.success(f"Đã upload (privacy thực tế: {p.publish_privacy}): {p.youtube_url}")
     if p.publish_error:

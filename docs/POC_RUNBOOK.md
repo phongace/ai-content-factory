@@ -33,7 +33,7 @@ Mọi thứ đều optional, thiếu thì app tự chạy chế độ mock:
 ## 3. Chạy app
 
 ```bash
-uv run streamlit run ui/app.py    # http://localhost:8501
+uv run streamlit run ui/studio.py    # http://localhost:8501
 ```
 
 ## 4–10. Flow trong UI

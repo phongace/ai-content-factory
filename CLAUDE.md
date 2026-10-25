@@ -9,10 +9,12 @@ Topic → Claude storyboard JSON → per-scene voice → manual Muse clips → s
 render (MoneyPrinterTurbo `VideoProject` + our final FFmpeg pass) → QC / replace one scene → YouTube (private/unlisted).
 
 ## Stack decisions (2026-10-22)
-- Python 3.11+ with `uv`. UI = Streamlit (`ui/app.py`). CLI = `factory` (`factory/cli.py`). Next.js was dropped.
+- Python 3.11+ with `uv`. UI = Streamlit (`ui/studio.py`). CLI = `factory` (`factory/cli.py`). Next.js was dropped.
 - Media engine = `mpt==1.3.8` (MoneyPrinterTurbo, MIT). Pinned on purpose. All imports go through
   `factory/mpt_bridge.py` or `factory/voice.py`. Never import `app.*` anywhere else.
-- Our package is `factory/` (MPT already owns the top-level `app` package name).
+- Our package is `factory/` (MPT already owns the top-level `app` package name). Never name any of our
+  modules or scripts `app` (the Streamlit UI was `ui/app.py` until 2026-10-25: Streamlit puts `ui/` on
+  `sys.path`, so `import app.services...` resolved to the UI script and every render from the UI failed).
 - Storage = local filesystem `data/projects/{id}/` (project.json, storyboard.json, scenes/, audio/, subtitles/, renders/, logs/).
 
 ## Hard rules
