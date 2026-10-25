@@ -11,11 +11,12 @@ from pathlib import Path
 from . import media
 from .config import Settings, get_settings
 from .planner import ContentPlanner, PlannerError, get_planner
-from .publish.base import Publisher, PublishRequest
+from .publish.base import Publisher, PublishRequest, clean_description, clean_title, strip_angle_brackets
 from .render import render as render_video
 from .schema import (
     ASSET_SOURCES,
     AssetSource,
+    BgmSetting,
     PlannerInput,
     Project,
     StoryboardFile,
@@ -132,22 +133,26 @@ class Factory:
 
     # ------------------------------------------------------------ edits
     def edit_scene(self, pid: str, order: int, narration: str | None = None, video_prompt: str | None = None) -> None:
+        narration_changed = False
+
         def fn(sb: StoryboardFile) -> None:
+            nonlocal narration_changed
             s = sb.scene(order)
             if narration is not None:
                 if not narration.strip():
                     raise ValueError("narration cannot be empty")
+                narration_changed = narration.strip() != s.narration.strip()
                 s.narration = narration.strip()
             if video_prompt is not None:
                 s.video_prompt = video_prompt.strip()
 
         self.store.update_storyboard(pid, fn)
-        if narration is not None:
+        if narration_changed:
             self.store.update(pid, self._touch_assets)
 
     def edit_metadata(self, pid: str, title: str, description: str, hashtags: list[str]) -> None:
         def fn(sb: StoryboardFile) -> None:
-            sb.title, sb.description = title.strip()[:100], description.strip()
+            sb.title, sb.description = clean_title(title), clean_description(description)
             sb.hashtags = ["#" + h.strip().lstrip("#") for h in hashtags if h.strip().lstrip("#")]
 
         self.store.update_storyboard(pid, fn)
@@ -167,34 +172,48 @@ class Factory:
                 f.unlink()
 
     def attach_asset(self, pid: str, order: int, src: str | Path, source: str | None = None) -> None:
-        """Set or replace a scene's visual asset with a video (manual Muse clip) or a still image."""
+        """Set or replace a scene's visual asset with a video (manual Muse clip) or a still image.
+
+        Input is fully validated (type, source, scene, and a probe of a private copy) before the `clips` stage
+        starts, so a bad upload raises without touching the project's status. Attaching the exact file the scene
+        already has changes nothing: no cost, no stale render.
+        """
         src = Path(src)
         ext = src.suffix.lower()
         kind = asset_type_for(src)
-        with self.stage(pid, "clips"):
-            self.storyboard(pid).scene(order)  # validates order
-            if kind is None:
-                raise ValueError(f"unsupported asset type '{ext}' ({supported_asset_types()})")
-            chosen: AssetSource | None
-            if source is None:
-                chosen = "muse" if kind == "video" else "upload"
+        if kind is None:
+            raise ValueError(f"unsupported asset type '{ext}' ({supported_asset_types()})")
+        chosen: AssetSource | None
+        if source is None:
+            chosen = "muse" if kind == "video" else "upload"
+        else:
+            chosen = next((x for x in ASSET_SOURCES if x == source), None)
+            if chosen is None:
+                raise ValueError(f"unknown asset source '{source}' (use {', '.join(ASSET_SOURCES)})")
+        current = self.storyboard(pid).scene(order)
+        scenes = self.store.path(pid, "scenes")
+        dst = scenes / scene_name(order, "mp4" if kind == "video" else ext)
+        tmp = scenes / f".incoming{ext}"
+        shutil.copyfile(src, tmp)
+        try:
+            existing = self.store.path(pid, current.asset_path) if current.asset_path else None
+            if existing and existing.is_file() and media.file_sha256(existing) == media.file_sha256(tmp):
+                tmp.unlink()
+                self.store.log(pid, f"asset scene {order}: same file already attached, nothing changed")
+                return
+            if kind == "image":
+                img = media.probe_image(tmp)
+                duration, width, height = None, img.width, img.height
             else:
-                chosen = next((x for x in ASSET_SOURCES if x == source), None)
-                if chosen is None:
-                    raise ValueError(f"unknown asset source '{source}' (use {', '.join(ASSET_SOURCES)})")
-            scenes = self.store.path(pid, "scenes")
-            dst = scenes / scene_name(order, "mp4" if kind == "video" else ext)
-            tmp = scenes / f".incoming{ext}"
-            shutil.copyfile(src, tmp)
+                info = media.probe(tmp)
+                if not info.has_video:
+                    raise ValueError("file has no video stream")
+                duration, width, height = info.duration, info.width, info.height
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
+        with self.stage(pid, "clips"):
             try:
-                if kind == "image":
-                    img = media.probe_image(tmp)
-                    duration, width, height = None, img.width, img.height
-                else:
-                    info = media.probe(tmp)
-                    if not info.has_video:
-                        raise ValueError("file has no video stream")
-                    duration, width, height = info.duration, info.width, info.height
                 tmp.replace(dst)
             finally:
                 tmp.unlink(missing_ok=True)
@@ -279,14 +298,65 @@ class Factory:
         self.store.log(pid, f"voice scene {order}: {source} {duration:.2f}s")
 
     # ------------------------------------------------------------ render / QC
-    def render(self, pid: str, bgm: str | Path | None = None, bgm_volume: float | None = None) -> Project:
+    def _resolve_bgm(
+        self, pid: str, p: Project, bgm: str | Path | None, bgm_volume: float | None, no_bgm: bool
+    ) -> BgmSetting | None:
+        """Music for this render: a new file (copied into renders/bgm.<ext>), else the stored one, else none.
+
+        `BGM_FILE` is only the starting default of a project that has never rendered; after that the project's
+        own choice wins, and `no_bgm` removes it for good.
+        """
+        if no_bgm and bgm:
+            raise ValueError("choose either a background music file or no background music, not both")
+        if bgm_volume is not None and not 0.0 <= bgm_volume <= 1.0:
+            raise ValueError(f"background music volume must be between 0 and 1 (got {bgm_volume})")
+        renders = self.store.path(pid, "renders")
+        if no_bgm:
+            for f in renders.glob("bgm.*"):
+                f.unlink()
+            return None
+        if not bgm and p.bgm is None and p.render.file is None and self.s.bgm_file:
+            bgm = self.s.bgm_file
+        volume = bgm_volume if bgm_volume is not None else (p.bgm.volume if p.bgm else self.s.bgm_volume)
+        if not bgm:
+            if p.bgm is None:
+                return None
+            if not self.store.path(pid, p.bgm.file).is_file():
+                raise ValueError(f"stored background music is missing ({p.bgm.file}): upload it again or remove it")
+            return BgmSetting(file=p.bgm.file, sha256=p.bgm.sha256, volume=volume)
+        src = Path(bgm)
+        if not src.is_file():
+            raise ValueError(f"background music not found: {src}")
+        dst = renders / f"bgm{src.suffix.lower()}"
+        tmp = renders / f".incoming-bgm{src.suffix.lower()}"
+        shutil.copyfile(src, tmp)
+        try:
+            media.audio_duration(tmp)
+            tmp.replace(dst)
+        finally:
+            tmp.unlink(missing_ok=True)
+        for f in renders.glob("bgm.*"):
+            if f != dst:
+                f.unlink()
+        return BgmSetting(file=f"renders/{dst.name}", sha256=media.file_sha256(dst), volume=volume)
+
+    def render(
+        self,
+        pid: str,
+        bgm: str | Path | None = None,
+        bgm_volume: float | None = None,
+        no_bgm: bool = False,
+    ) -> Project:
+        """Render the Short. Music: `bgm` replaces the project's stored track, no argument reuses it, `no_bgm`
+        removes it. `bgm_volume` defaults to the stored volume."""
         p = self.store.get(pid)
         sb = self.storyboard(pid)
-        music = Path(bgm) if bgm else (Path(self.s.bgm_file) if self.s.bgm_file else None)
+        music = self._resolve_bgm(pid, p, bgm, bgm_volume, no_bgm)
 
         def start(p: Project) -> None:
             p.status = "rendering"
             p.render.status, p.render.error = "rendering", None
+            p.bgm = music
 
         self.store.update(pid, start)
         try:
@@ -296,8 +366,8 @@ class Factory:
                     self.store.dir(pid),
                     p.language,
                     sb,
-                    music,
-                    self.s.bgm_volume if bgm_volume is None else bgm_volume,
+                    self.store.path(pid, music.file) if music else None,
+                    music.volume if music else self.s.bgm_volume,
                 )
         except Exception as e:
             err = str(e)
@@ -315,12 +385,16 @@ class Factory:
             r.duration, r.file_size, r.width, r.height = out.duration, out.size, out.width, out.height
             r.render_count += 1
             r.reused_stages = out.reused_stages
+            r.bgm = music
             p.cost.render_duration_ms = out.elapsed_ms
             p.status, p.current_stage = "rendered", "qc"
 
         p = self.store.update(pid, done)
+        bgm_note = f"{music.file}@{music.volume:g}" if music else "none"
         self.store.log(
-            pid, f"render ok {out.duration:.2f}s {out.size}B in {out.elapsed_ms}ms reused={out.reused_stages}"
+            pid,
+            f"render ok {out.duration:.2f}s {out.size}B in {out.elapsed_ms}ms reused={out.reused_stages} "
+            f"bgm={bgm_note}",
         )
         return p
 
@@ -343,7 +417,7 @@ class Factory:
         if p.render_stale:
             raise ValueError("assets changed after the last render, render again before publishing")
         sb = self.storyboard(pid)
-        final_title = sb.title if title is None else title.strip()
+        final_title = strip_angle_brackets(sb.title if title is None else title).strip()
         if not final_title or len(final_title) > 100:
             raise ValueError("title must be 1-100 characters (YouTube limit)")
         req = PublishRequest(

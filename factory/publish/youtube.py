@@ -20,7 +20,7 @@ import requests
 
 from ..config import Settings, get_settings
 from ..store import atomic_write_text
-from .base import NotConfigured, PublishError, PublishRequest, PublishResult, build_description
+from .base import NotConfigured, PublishError, PublishRequest, PublishResult, build_description, clean_title
 
 UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 SCOPES = [UPLOAD_SCOPE]
@@ -399,7 +399,7 @@ class YouTubePublisher:
         from googleapiclient.http import MediaFileUpload
 
         youtube = build("youtube", "v3", credentials=_credentials(self.s), cache_discovery=False)
-        title = req.title.strip()[:100]
+        title = clean_title(req.title)
         body = {
             "snippet": {
                 "title": title,

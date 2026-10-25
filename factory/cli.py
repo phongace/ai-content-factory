@@ -67,7 +67,7 @@ def cmd_clip(a, f: Factory) -> int:
 
 
 def cmd_render(a, f: Factory) -> int:
-    p = f.render(a.project, a.bgm)
+    p = f.render(a.project, a.bgm, a.bgm_volume, no_bgm=a.no_bgm)
     _print({**p.render.model_dump(), "file": str(f.store.path(p.id, p.render.file or "renders/final-short.mp4"))})
     return 0
 
@@ -168,9 +168,12 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("scene", type=int)
     c.add_argument("file", type=Path)
     c.add_argument("--source", choices=ASSET_SOURCES, help="default: muse for a video, upload for an image")
-    r = sub.add_parser("render")
+    r = sub.add_parser("render", help="render the Short; background music is kept from the previous render")
     r.add_argument("project")
-    r.add_argument("--bgm", type=Path)
+    music = r.add_mutually_exclusive_group()
+    music.add_argument("--bgm", type=Path, help="use this music (copied into the project, reused by later renders)")
+    music.add_argument("--no-bgm", action="store_true", help="remove the project's background music")
+    r.add_argument("--bgm-volume", type=float, help="music volume 0-1 (default: the project's stored volume)")
     sub.add_parser("youtube-connect", help="one-time OAuth in the browser, then verifies the token scope")
     sub.add_parser("youtube-status", help="connected / not_connected / not_configured + granted scopes and expiry")
     pb = sub.add_parser("publish")

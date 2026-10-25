@@ -4,12 +4,14 @@ import functools
 import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from factory import config as config_mod
 from factory.fixtures import make_set
+from factory.pipeline import Factory
 
 FIXTURE_DIR = Path(__file__).parent / ".fixtures"
 _SKIPPED_MEDIA = pytest.StashKey[int]()
@@ -70,6 +72,19 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setenv("VOICE_PROVIDER", "mock")
     monkeypatch.setenv("VOICESTUDIO_BASE_URL", "http://127.0.0.1:9/v1")  # closed port
     yield
+
+
+@pytest.fixture(scope="session")
+def short_voice() -> Callable[[Factory, str], None]:
+    """Call between `plan` and `generate_voice` in a rendering project: every render costs time in proportion to the
+    voice length. Scenes 2.. keep 17 words (4.8s of mock voice), so the track stays just above the 20s QC minimum;
+    scene 1 keeps its full 6.4s line so a 3s clip under it still counts as looping."""
+
+    def apply(f: Factory, pid: str) -> None:
+        for s in f.storyboard(pid).scenes[1:]:
+            f.edit_scene(pid, s.order, narration=" ".join(s.narration.split()[:17]))
+
+    return apply
 
 
 @pytest.fixture(scope="session")

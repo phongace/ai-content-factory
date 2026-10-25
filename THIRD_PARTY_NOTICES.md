@@ -4,8 +4,8 @@
 
 - Used as a pinned dependency: PyPI package `mpt==1.3.8` (upstream https://github.com/harry0703/MoneyPrinterTurbo).
 - No MoneyPrinterTurbo source files are copied into this repository. We import:
-  `app.services.video_project` (scene renderer), `app.services.voice` (`tts`, `_openai_compatible_tts`),
-  and the bundled Be Vietnam Pro font directory (`app/_assets/resource/fonts`).
+  `app.services.video_project` (scene renderer) and `app.services.voice` (`tts`, `_openai_compatible_tts`).
+  Fonts are NOT taken from the `mpt` wheel any more: see "Bundled font" below.
 - If any file is ever vendored/modified, put it under `vendor/moneyprinterturbo/`, keep its header, add
   "Adapted from MoneyPrinterTurbo (MIT, Copyright (c) 2024 Harry), commit <sha>, modified by Nova Digital",
   and list it here.
@@ -34,10 +34,21 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## Bundled font
+
+- `factory/assets/fonts/BeVietnamPro-Bold.ttf`: Be Vietnam Pro Bold, Copyright 2021 The Be Vietnam Pro Project
+  Authors (https://github.com/bettergui/BeVietnamPro), licensed under the SIL Open Font License 1.1.
+- Licence text: `factory/assets/fonts/OFL.txt` (copied verbatim from `ofl/bevietnampro/OFL.txt` in
+  https://github.com/google/fonts). It must stay next to the font file.
+- The TTF is the copy shipped in `mpt==1.3.8`; it is the only face the caption style uses (libass selects
+  `Be Vietnam Pro`, weight 700). libass reads fonts only from this directory (`fontsdir` in `factory/render.py`).
+- The directory lives inside the `factory` package, so the wheel build and an editable checkout both carry it.
+
 ## Assets we deliberately do NOT use
 
 - `mpt` bundled music (`resource/songs`): upstream README says it comes from YouTube videos, copyright unclear.
-- Proprietary fonts bundled in `mpt` (Microsoft YaHei, STHeiti, UTM Kabel KT). Captions use Be Vietnam Pro (SIL OFL).
+- Proprietary fonts bundled in `mpt` (Microsoft YaHei, STHeiti, UTM Kabel KT). They are never copied here and the
+  `mpt` fonts folder is not on libass's font path, so a caption can never pick them up. Captions use Be Vietnam Pro.
 
 ## Services called over HTTP (not distributed)
 

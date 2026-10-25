@@ -41,9 +41,26 @@ class Publisher(Protocol):
     def upload(self, req: PublishRequest) -> PublishResult: ...
 
 
+TITLE_MAX_CHARS = 100
+DESCRIPTION_MAX_BYTES = 4999  # YouTube allows 5000 UTF-8 bytes; stay strictly under
+
+
+def strip_angle_brackets(text: str) -> str:
+    return text.replace("<", "").replace(">", "")
+
+
+def clean_title(title: str) -> str:
+    return strip_angle_brackets(title).strip()[:TITLE_MAX_CHARS]
+
+
+def clean_description(description: str) -> str:
+    data = strip_angle_brackets(description).strip().encode("utf-8")
+    return data[:DESCRIPTION_MAX_BYTES].decode("utf-8", errors="ignore")
+
+
 def build_description(description: str, hashtags: list[str]) -> str:
     tags = " ".join(h if h.startswith("#") else f"#{h}" for h in hashtags)
-    return f"{description.strip()}\n\n{tags}".strip()[:4900]
+    return clean_description(f"{description.strip()}\n\n{tags}")
 
 
 class MockPublisher:

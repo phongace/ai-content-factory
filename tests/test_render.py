@@ -1,4 +1,4 @@
-"""TC-04, TC-05, TC-06, TC-08, TC-11 + P0-10..13. Spawns ffmpeg (slow, ~1-2 min).
+"""TC-04, TC-05, TC-06, TC-08, TC-11 + P0-10..13. Spawns ffmpeg (slow, ~1 min).
 
 Needs a libass-enabled FFmpeg (FFMPEG_PATH / FFPROBE_PATH from the process env); skipped by conftest otherwise.
 """
@@ -23,7 +23,7 @@ def sha(path):
 
 
 @pytest.fixture(scope="module")
-def rendered(media_set, tmp_path_factory):
+def rendered(media_set, short_voice, tmp_path_factory):
     """One project, mixed sources, rendered with music. Shared by the assertions below."""
     mp = pytest.MonkeyPatch()
     data = tmp_path_factory.mktemp("render") / "data"
@@ -33,6 +33,7 @@ def rendered(media_set, tmp_path_factory):
     f = Factory()
     pid = f.create_project("Render test", 25, "vi").id
     f.plan(pid, MockPlanner())
+    short_voice(f, pid)
     f.generate_voice(pid)
     clips = [media_set["landscape_short"], media_set["portrait_long"], media_set["small_4x3"], media_set["image"]]
     for s in f.storyboard(pid).scenes:
@@ -92,9 +93,11 @@ def test_tc04_tc08_replace_one_scene_and_rerender(rendered, media_set):
 
 def test_tc11_corrupt_clip_rejected_on_upload(rendered, media_set):
     f, pid, _ = rendered
+    before = f.store.get(pid)
     with pytest.raises(Exception, match="corrupt.mp4|unreadable"):
         f.attach_asset(pid, 1, media_set["corrupt"])
-    assert f.store.get(pid).error
+    after = f.store.get(pid)  # a rejected upload leaves the project untouched: no error state, same status
+    assert after.error is None and after.status == before.status
 
 
 def test_tc11_corrupt_clip_on_disk_fails_render_with_scene(rendered):
@@ -116,14 +119,3 @@ def test_render_refuses_missing_assets():
     f.plan(pid, MockPlanner())
     with pytest.raises(RenderError, match="Scene 1: missing visual asset"):
         f.render(pid)
-
-
-def test_render_without_music(media_set):
-    f = Factory()
-    pid = f.create_project("No music", 20, "en").id
-    f.plan(pid, MockPlanner())
-    f.generate_voice(pid)
-    for s in f.storyboard(pid).scenes:
-        f.attach_asset(pid, s.order, media_set["portrait_short"])
-    p = f.render(pid)
-    assert p.render.status == "done" and (p.render.width, p.render.height) == (1080, 1920)

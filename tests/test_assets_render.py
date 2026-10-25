@@ -1,4 +1,4 @@
-"""Image-or-video scene assets through the real renderer. Spawns ffmpeg (slow, ~2-3 min).
+"""Image-or-video scene assets through the real renderer. Spawns ffmpeg (slow, ~1-2 min).
 
 Needs a libass-enabled FFmpeg (FFMPEG_PATH / FFPROBE_PATH from the process env); skipped by conftest otherwise.
 """
@@ -84,7 +84,7 @@ def test_each_image_format_becomes_an_exact_1080x1920_clip(kind, stills, tmp_pat
         pytest.skip("this ffmpeg build cannot encode webp")
     src = stills[kind]
     project = project_with_image(tmp_path, src)
-    voice = 6.37
+    voice = 2.37
     visual = normalize_scene_visual(project, scene(1, f"scenes/scene_01{src.suffix}", voice))
     info = media.probe(visual.path)
     assert visual.asset_type == "image" and visual.path.parent.name == "normalized"
@@ -99,7 +99,7 @@ def test_each_image_format_becomes_an_exact_1080x1920_clip(kind, stills, tmp_pat
 def test_image_is_cover_cropped_never_stretched(width, height, radius, tmp_path):
     src = make_circle_image(tmp_path / "disc.png", width, height, radius)
     project = project_with_image(tmp_path, src)
-    seconds = 4.0
+    seconds = 1.5
     clip = normalize_scene_visual(project, scene(1, "scenes/scene_01.png", seconds)).path
     first_w, first_h = disc_size(gray_frame(clip, 0))
     expected = 2 * radius * max(1080 / width, 1920 / height)  # uniform cover scale, centre crop
@@ -113,22 +113,22 @@ def test_image_is_cover_cropped_never_stretched(width, height, radius, tmp_path)
 def test_normalized_clip_is_cached_by_content_and_voice_frames(media_set, tmp_path):
     project = project_with_image(tmp_path, media_set["landscape_image"])
     asset = "scenes/scene_01.jpg"
-    first = normalize_scene_visual(project, scene(1, asset, 6.37))
+    first = normalize_scene_visual(project, scene(1, asset, 1.07))
     assert not first.reused
     stamp = first.path.stat().st_mtime_ns
 
-    again = normalize_scene_visual(project, scene(1, asset, 6.37))
+    again = normalize_scene_visual(project, scene(1, asset, 1.07))
     assert again.reused and again.path == first.path and again.path.stat().st_mtime_ns == stamp
 
-    same_frames = normalize_scene_visual(project, scene(1, asset, 6.39))  # 6.37s and 6.39s are both 192 frames
+    same_frames = normalize_scene_visual(project, scene(1, asset, 1.09))  # 1.07s and 1.09s are both 33 frames
     assert same_frames.reused and same_frames.path == first.path
 
-    longer = normalize_scene_visual(project, scene(1, asset, 6.41))  # 193 frames: a different clip
+    longer = normalize_scene_visual(project, scene(1, asset, 1.11))  # 34 frames: a different clip
     assert not longer.reused and longer.path != first.path
     assert not first.path.exists()
 
     shutil.copyfile(media_set["portrait_image"], project / asset)  # same name, different content
-    other = normalize_scene_visual(project, scene(1, asset, 6.41))
+    other = normalize_scene_visual(project, scene(1, asset, 1.11))
     assert not other.reused and other.path != longer.path
     assert len(list((project / "scenes" / "normalized").glob("scene_01-*.mp4"))) == 1
 
@@ -137,16 +137,22 @@ def test_normalized_clip_is_cached_by_content_and_voice_frames(media_set, tmp_pa
 
 
 @pytest.fixture(scope="module")
-def mixed(media_set, tmp_path_factory):
-    """Landscape video, portrait image, portrait video, landscape image: rendered once, shared below."""
+def mixed(media_set, short_voice, tmp_path_factory):
+    """Landscape video, portrait image, portrait video, landscape image: rendered once, without music, shared below.
+
+    The tests share this one project and run in file order: read-only checks first, then the failed-render and
+    unchanged-rerender pair, then the single scenario that edits scenes, then the ones that leave scenes empty.
+    """
     mp = pytest.MonkeyPatch()
     data = tmp_path_factory.mktemp("mixed") / "data"
     mp.setenv("DATA_DIR", str(data))
     mp.setenv("MPT_HOME", str(data / "mpt"))
     mp.setenv("VOICE_PROVIDER", "mock")
+    mp.delenv("BGM_FILE", raising=False)  # this is the suite's render without music
     f = Factory()
-    pid = f.create_project("Mixed visuals", 30, "vi").id
+    pid = f.create_project("Mixed visuals", 25, "vi").id  # 25s: the short voice stays within 30% of the target
     f.plan(pid, MockPlanner())
+    short_voice(f, pid)
     f.generate_voice(pid)
     for order, key in enumerate(["landscape_short", "portrait_image", "portrait_long", "image"], start=1):
         f.attach_asset(pid, order, media_set[key])
@@ -162,6 +168,7 @@ def test_mixed_video_and_image_scenes_render_1080x1920(mixed):
     assert info.video_codec == "h264" and info.audio_codec == "aac" and info.fps == pytest.approx(FPS, abs=0.01)
     sb = f.storyboard(pid)
     assert p.render.duration == pytest.approx(sum(s.actual_audio_duration for s in sb.scenes), abs=0.25)
+    assert p.render.status == "done" and (p.render.width, p.render.height) == (1080, 1920)  # no music was given
 
 
 def test_image_clips_last_exactly_the_voice_and_never_loop(mixed):
@@ -198,77 +205,23 @@ def test_muse_cost_counts_only_muse_assets(media_set, monkeypatch):
     assert p.muse_clip_count == 1 and p.cost.muse_estimated_cost == 0.5
 
 
-def test_unchanged_rerender_reuses_every_stage_and_normalized_clip(mixed):
-    f, pid, first = mixed
-    folder = f.store.path(pid, "scenes/normalized")
-    before = {x.name: x.stat().st_mtime_ns for x in folder.glob("*.mp4")}
-    assert len(before) == 2
-    p = f.render(pid)
-    reused, rebuilt = stage_report(f, pid)
-    assert not rebuilt and len(reused) == 14  # 4 scenes x (audio, timing, scene) + assembly + export
-    assert p.render.reused_stages == 14 and p.render.render_count == first.render.render_count + 1
-    assert {x.name: x.stat().st_mtime_ns for x in folder.glob("*.mp4")} == before
-
-
-def test_replacing_an_image_rebuilds_only_that_scene(mixed, media_set):
-    f, pid, _ = mixed
-    f.attach_asset(pid, 2, media_set["landscape_image"])
-    assert f.store.get(pid).render_stale
-    assert "Assets changed after the last render, render again" in qc_warnings(
-        f.store.get(pid), f.storyboard(pid), f.store.dir(pid)
-    )
-    assert not list(f.store.path(pid, "scenes/normalized").glob("scene_02-*"))  # stale cache dropped at replace
-    p = f.render(pid)
-    reused, rebuilt = stage_report(f, pid)
-    assert rebuilt == {"scene_02:scene", "assembly", "export"} and len(reused) == 11
-    assert len(list(f.store.path(pid, "scenes/normalized").glob("scene_02-*.mp4"))) == 1
-    assert not p.render_stale and (p.render.width, p.render.height) == (1080, 1920)
-
-
-def test_switching_between_image_and_video_rebuilds_only_those_scenes(mixed, media_set):
-    f, pid, _ = mixed
-    f.attach_asset(pid, 2, media_set["landscape_short"])  # image -> video
-    f.attach_asset(pid, 3, media_set["portrait_image"])  # video -> image
-    sb = f.storyboard(pid)
-    assert (sb.scene(2).asset_type, sb.scene(3).asset_type) == ("video", "image")
-    names = sorted(x.name for x in f.store.path(pid, "scenes").glob("scene_0[23].*"))
-    assert names == ["scene_02.mp4", "scene_03.jpg"]  # the old file of the other type is gone
-    p = f.render(pid)
-    reused, rebuilt = stage_report(f, pid)
-    assert rebuilt == {"scene_02:scene", "scene_03:scene", "assembly", "export"} and len(reused) == 10
-    assert (p.render.width, p.render.height) == (1080, 1920)
-
-
-def test_remove_asset_clears_state_and_files(mixed, media_set):
-    f, pid, _ = mixed
-    f.attach_asset(pid, 4, media_set["image"], "generated")
-    assert f.storyboard(pid).scene(4).asset_source == "generated"
-    f.remove_asset(pid, 4)
-    s = f.storyboard(pid).scene(4)
-    assert (s.asset_type, s.asset_path, s.asset_source, s.asset_width) == (None, None, None, None)
-    assert not list(f.store.path(pid, "scenes").glob("scene_04.*"))
-    assert not list(f.store.path(pid, "scenes/normalized").glob("scene_04-*"))
-    assert f.store.get(pid).render_stale
-    with pytest.raises(RenderError, match="Scene 4: missing visual asset"):
-        f.render(pid)
-
-
 def test_corrupt_and_truncated_images_are_rejected_on_upload(mixed, media_set, tmp_path):
     f, pid, _ = mixed
     truncated = tmp_path / "truncated.jpg"
     whole = media_set["landscape_image"].read_bytes()
     truncated.write_bytes(whole[: len(whole) // 2])
     before = f.storyboard(pid).scene(3).asset_path
+    project = f.store.get(pid)
     for bad in (media_set["corrupt_image"], truncated):
         with pytest.raises(media.MediaError, match="not a readable image|corrupt or truncated"):
             f.attach_asset(pid, 3, bad)
         assert f.storyboard(pid).scene(3).asset_path == before
-    assert f.store.get(pid).error.startswith("clips:")
+    after = f.store.get(pid)  # a rejected upload leaves the project untouched: same status, same error
+    assert (after.status, after.error) == (project.status, project.error)
 
 
-def test_deleted_or_corrupt_image_on_disk_fails_render_and_qc_naming_the_scene(mixed, media_set):
+def test_deleted_or_corrupt_image_on_disk_fails_render_and_qc_naming_the_scene(mixed):
     f, pid, _ = mixed
-    f.attach_asset(pid, 4, media_set["image"])
     pdir = f.store.dir(pid)
     image = f.store.path(pid, "scenes/scene_04.png")
     original = image.read_bytes()
@@ -286,17 +239,55 @@ def test_deleted_or_corrupt_image_on_disk_fails_render_and_qc_naming_the_scene(m
         assert any(w.startswith("Scene 4: bad image") for w in qc_warnings(f.store.get(pid), f.storyboard(pid), pdir))
         assert f.store.get(pid).render.status == "error"
     finally:
-        image.write_bytes(original)
-    assert f.render(pid).render.status == "done"
+        image.write_bytes(original)  # the next test renders the restored project
+
+
+def test_unchanged_rerender_reuses_every_stage_and_normalized_clip(mixed):
+    """Also the recovery render after the failed ones above: the restored image is byte for byte the old one."""
+    f, pid, first = mixed
+    folder = f.store.path(pid, "scenes/normalized")
+    before = {x.name: x.stat().st_mtime_ns for x in folder.glob("*.mp4")}
+    assert len(before) == 2
+    p = f.render(pid)
+    assert p.render.status == "done"
+    reused, rebuilt = stage_report(f, pid)
+    assert not rebuilt and len(reused) == 14  # 4 scenes x (audio, timing, scene) + assembly + export
+    assert p.render.reused_stages == 14 and p.render.render_count == first.render.render_count + 1
+    assert {x.name: x.stat().st_mtime_ns for x in folder.glob("*.mp4")} == before
+
+
+def test_replacing_and_switching_assets_rebuilds_only_the_edited_scenes(mixed, media_set):
+    """One re-render after three edits: image -> other image, video -> image, image -> video."""
+    f, pid, _ = mixed
+    f.attach_asset(pid, 2, media_set["landscape_image"])
+    f.attach_asset(pid, 3, media_set["portrait_image"])
+    f.attach_asset(pid, 4, media_set["landscape_short"])
+    sb = f.storyboard(pid)
+    assert [s.asset_type for s in sb.scenes] == ["video", "image", "image", "video"]
+    names = sorted(x.name for x in f.store.path(pid, "scenes").glob("scene_0[234].*"))
+    assert names == ["scene_02.jpg", "scene_03.jpg", "scene_04.mp4"]  # the old file of the other type is gone
+    assert f.store.get(pid).render_stale
+    assert "Assets changed after the last render, render again" in qc_warnings(f.store.get(pid), sb, f.store.dir(pid))
+    normalized = f.store.path(pid, "scenes/normalized")
+    assert not list(normalized.glob("scene_0[24]-*"))  # stale cache dropped at replace
+    p = f.render(pid)
+    reused, rebuilt = stage_report(f, pid)
+    assert rebuilt == {"scene_02:scene", "scene_03:scene", "scene_04:scene", "assembly", "export"}
+    assert len(reused) == 9  # scene 1 and every audio/timing stage
+    assert [len(list(normalized.glob(f"scene_0{n}-*.mp4"))) for n in (2, 3, 4)] == [1, 1, 0]
+    assert not p.render_stale and (p.render.width, p.render.height) == (1080, 1920)
 
 
 # ---------------------------------------------------------------- UI
 
 
-def test_storyboard_ui_shows_type_source_preview_and_removes_assets(mixed, monkeypatch):
+def test_storyboard_ui_shows_type_source_preview_and_removes_assets(mixed, media_set, monkeypatch, tmp_path):
     f, pid, _ = mixed
-    monkeypatch.setenv("DATA_DIR", str(f.s.data_dir))
-    monkeypatch.setenv("MPT_HOME", str(f.s.mpt_home))
+    ui_data = tmp_path / "ui-data"  # the page deletes a scene's asset: on a copy, so `mixed` keeps all four
+    shutil.copytree(f.store.dir(pid), ui_data / "projects" / pid)
+    monkeypatch.setenv("DATA_DIR", str(ui_data))
+    monkeypatch.setenv("MPT_HOME", str(ui_data / "mpt"))
+    Factory().attach_asset(pid, 3, media_set["portrait_image"])  # scene 3 is an image here (a no-op after the edits)
     at = AppTest.from_file(APP, default_timeout=120)
     at.session_state["pid"] = pid
     at.run()
@@ -308,5 +299,20 @@ def test_storyboard_ui_shows_type_source_preview_and_removes_assets(mixed, monke
 
     at.button(key="rm1").click().run()
     assert not at.exception
-    assert f.storyboard(pid).scene(1).asset_path is None
-    assert not list(f.store.path(pid, "scenes").glob("scene_01.*"))
+    ui_f = Factory()
+    assert ui_f.storyboard(pid).scene(1).asset_path is None
+    assert not list(ui_f.store.path(pid, "scenes").glob("scene_01.*"))
+
+
+def test_remove_asset_clears_state_and_files(mixed, media_set):  # last: it leaves scene 4 empty
+    f, pid, _ = mixed
+    f.attach_asset(pid, 4, media_set["portrait_image"], "generated")  # a file scene 4 never held, so not a no-op
+    assert f.storyboard(pid).scene(4).asset_source == "generated"
+    f.remove_asset(pid, 4)
+    s = f.storyboard(pid).scene(4)
+    assert (s.asset_type, s.asset_path, s.asset_source, s.asset_width) == (None, None, None, None)
+    assert not list(f.store.path(pid, "scenes").glob("scene_04.*"))
+    assert not list(f.store.path(pid, "scenes/normalized").glob("scene_04-*"))
+    assert f.store.get(pid).render_stale
+    with pytest.raises(RenderError, match="Scene 4: missing visual asset"):
+        f.render(pid)

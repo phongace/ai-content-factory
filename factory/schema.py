@@ -193,6 +193,12 @@ class Cost(BaseModel):
         )
 
 
+class BgmSetting(BaseModel):
+    file: str  # copy kept inside the project dir, relative to it
+    sha256: str
+    volume: float
+
+
 class RenderInfo(BaseModel):
     status: Literal["idle", "rendering", "done", "error"] = "idle"
     file: str | None = None
@@ -204,6 +210,7 @@ class RenderInfo(BaseModel):
     rendered_at: str | None = None
     render_count: int = 0
     reused_stages: int = 0
+    bgm: BgmSetting | None = None  # music mixed into the last successful render
 
 
 class Project(BaseModel):
@@ -225,6 +232,7 @@ class Project(BaseModel):
     cost: Cost = Field(default_factory=Cost)
     muse_clip_count: int = 0
     assets_changed_at: str | None = None  # last edit to narration/clip/voice; render is stale if newer
+    bgm: BgmSetting | None = None  # music the next render mixes in, reused until replaced or removed
     render: RenderInfo = Field(default_factory=RenderInfo)
     youtube_video_id: str | None = None
     youtube_url: str | None = None
@@ -236,4 +244,6 @@ class Project(BaseModel):
     @property
     def render_stale(self) -> bool:
         r = self.render
-        return bool(r.file and self.assets_changed_at and r.rendered_at and self.assets_changed_at > r.rendered_at)
+        if not (r.file and r.rendered_at):
+            return False
+        return bool(self.assets_changed_at and self.assets_changed_at > r.rendered_at) or self.bgm != r.bgm

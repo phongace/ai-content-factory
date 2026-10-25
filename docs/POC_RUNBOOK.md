@@ -28,7 +28,7 @@ Mọi thứ đều optional, thiếu thì app tự chạy chế độ mock:
 | `ANTHROPIC_API_KEY` | Planner dùng MockPlanner (kịch bản mẫu) |
 | `VOICE_PROVIDER=voicestudio` + `VOICESTUDIO_*` | Voice dùng mock (tiếng tone) hoặc upload audio tay |
 | `data/secrets/youtube_client_secret.json` (hoặc `YOUTUBE_CLIENT_SECRET_FILE`; fallback `YOUTUBE_CLIENT_ID/SECRET`) | Tab Publish báo "YouTube not configured", render vẫn chạy |
-| `BGM_FILE` | Không có nhạc nền, hoặc upload nhạc ngay trong UI |
+| `BGM_FILE` | Không có nhạc nền, hoặc upload nhạc ngay trong UI. Chỉ là nhạc mặc định cho lần render đầu của project; sau đó project dùng nhạc đã lưu |
 
 ## 3. Chạy app
 
@@ -45,9 +45,12 @@ uv run streamlit run ui/app.py    # http://localhost:8501
    - **Cách A, video từ Muse**: bấm nút copy ở "Copy Muse Prompt" → dán vào Muse → generate → tải mp4 → "Upload Video" vào đúng scene (Source `muse`). Clip ngang/dọc/vuông đều được, app tự crop 9:16, clip ngắn hơn voice thì loop, dài hơn thì cắt.
    - **Cách B, ảnh**: chuẩn bị hoặc tạo ảnh ở ngoài → "Upload Image" (`.jpg`, `.jpeg`, `.png`, `.webp`, Source `upload` hoặc `generated`). Không có AI image provider trong app, không có Muse API.
    - Cả hai cách đi vào cùng một renderer. Ảnh được chuẩn hoá lúc Render thành clip 1080x1920: cover-scale + crop giữa (không méo), zoom chậm 10%, dài đúng bằng voice của scene (làm tròn lên theo frame 30fps, render cắt đúng theo voice). Clip này cache trong `scenes/normalized/` theo (nội dung ảnh, số frame, version), nên ảnh không đổi thì scene được reuse khi render lại.
-   - Chi phí Muse chỉ tính cho asset có Source `muse` (video upload mặc định là `muse`, ảnh mặc định là `upload`).
+   - Chi phí Muse chỉ tính cho asset có Source `muse` (video upload mặc định là `muse`, ảnh mặc định là `upload`). Gắn lại đúng file đang dùng cho scene (cùng sha256) là no-op: không cộng phí, không làm render stale. Upload sai (đuôi lạ, source lạ, file hỏng) báo lỗi ngay và không đổi status của project.
 5. **Render** (tab Render & QC): upload nhạc nền nếu muốn, chỉnh volume, bấm Render. Ra `data/projects/<id>/renders/final-short.mp4` 1080x1920, H.264/AAC, 30fps, -14 LUFS, phụ đề đã burn.
-6. **QC**: xem preview, duration, size, cảnh báo (scene chưa có asset, file asset mất/hỏng/sai đuôi, asset đổi sau lần render cuối, clip loop...). Scene nào xấu: chọn scene ở mục "Replace scene → Render again", upload asset mới (video hoặc ảnh, đổi ảnh sang video và ngược lại đều được), bấm nút. Chỉ scene đó render lại, planner và voice không chạy lại.
+   - **Nhạc nền được lưu theo project**: file nhạc được copy vào `renders/bgm.<đuôi>`, project.json giữ `bgm` (file, sha256, volume) và `render.bgm` (nhạc đã mix ở lần render cuối). Render lại mà không upload nhạc mới thì dùng lại đúng nhạc và volume đã lưu (kể cả khi bấm "Thay asset ... & render lại" ở bước 6). Slider volume mặc định là volume đã lưu.
+   - Đổi nhạc: upload file mới. Bỏ nhạc: tick "Bỏ nhạc nền" rồi Render (xoá `renders/bgm.*`, các lần render sau không có nhạc, `BGM_FILE` không tự bật lại).
+   - Đổi nhạc/volume mà render lỗi thì render cũ bị coi là stale (không publish được) cho tới khi render lại thành công.
+6. **QC**: xem preview, duration, size, cảnh báo (scene chưa có asset, file asset mất/hỏng/sai đuôi, asset đổi sau lần render cuối, clip loop...). Scene nào xấu: chọn scene ở mục "Replace scene → Render again", upload asset mới (video hoặc ảnh, đổi ảnh sang video và ngược lại đều được), chọn Source (video mặc định `muse`, ảnh mặc định `upload`), bấm nút. Chỉ scene đó render lại, planner và voice không chạy lại.
 7. **Chi phí Muse**: nhập tổng chi phí Muse thật của video ở cuối tab Render & QC.
 8. **Publish** (tab Publish): "Connect YouTube" (lần đầu, xem `docs/MANUAL_SETUP.md` §4), chọn private/unlisted, "Upload lên YouTube". Link hiện ngay sau khi xong.
 
@@ -61,7 +64,8 @@ uv run factory voice <project_id> --scene 2 --file voice2.mp3      # upload tay
 uv run factory clip <project_id> 1 ~/Downloads/muse_scene1.mp4     # video (Source mặc định: muse)
 uv run factory clip <project_id> 2 ~/Downloads/scene2.jpg            # ảnh (Source mặc định: upload)
 uv run factory clip <project_id> 2 scene2.webp --source generated    # muse | upload | generated | mock
-uv run factory render <project_id> [--bgm music.mp3]
+uv run factory render <project_id> [--bgm music.mp3] [--bgm-volume 0.3]   # không có --bgm: dùng lại nhạc đã lưu
+uv run factory render <project_id> --no-bgm                              # bỏ nhạc nền của project
 uv run factory youtube-connect       # OAuth một lần: mở trình duyệt, chờ tối đa 300s, kiểm tra scope, lưu token
 uv run factory youtube-status        # connected | not_connected | not_configured + scope + hạn token (exit 0 chỉ khi connected)
 uv run factory publish <project_id> --privacy private
@@ -99,4 +103,4 @@ uv run pytest -m "not media" # bản nhanh, bỏ test render
 
 ## Dữ liệu
 
-`data/projects/<id>/`: `project.json` (status, stage, error, cost, YouTube ID), `storyboard.json` (scene, prompt, `asset_type`/`asset_path`/`asset_source`, voice, duration thật; project cũ chỉ có `clip_file` vẫn load được, tự suy ra video), `scenes/` (file video/ảnh gốc của từng scene, `scenes/normalized/` là cache clip từ ảnh, xoá được), `audio/`, `subtitles/final.ass|srt`, `renders/final-short.mp4`, `renders/engine/` (cache render của MPT, xoá được), `logs/events.log`.
+`data/projects/<id>/`: `project.json` (status, stage, error, cost, YouTube ID), `storyboard.json` (scene, prompt, `asset_type`/`asset_path`/`asset_source`, voice, duration thật; project cũ chỉ có `clip_file` vẫn load được, tự suy ra video), `scenes/` (file video/ảnh gốc của từng scene, `scenes/normalized/` là cache clip từ ảnh, xoá được), `audio/`, `subtitles/final.ass|srt`, `renders/final-short.mp4`, `renders/bgm.<đuôi>` (bản copy nhạc nền của project), `renders/engine/` (cache render của MPT, xoá được), `logs/events.log`.

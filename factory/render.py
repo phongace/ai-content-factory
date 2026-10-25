@@ -16,10 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import media, subtitles
-from .mpt_bridge import fonts_dir, video_project_module
+from .mpt_bridge import video_project_module
 from .schema import AssetType, SceneState, StoryboardFile, asset_type_for, supported_asset_types
 
 WIDTH, HEIGHT, FPS = 1080, 1920, 30
+FONTS_DIR = Path(__file__).resolve().parent / "assets" / "fonts"  # Be Vietnam Pro Bold (SIL OFL), nothing else
 
 
 class RenderError(Exception):
@@ -61,12 +62,11 @@ def asset_problem(project_dir: Path, s: SceneState) -> str | None:
     return None
 
 
-def inspect_asset(project_dir: Path, s: SceneState) -> str | None:
-    """`asset_problem` plus a real decode/probe, so a corrupt file is caught. None = renderable."""
-    why = asset_problem(project_dir, s)
-    if why:
-        return why
-    path = project_dir / str(s.asset_path)
+_INSPECTED_OK: dict[tuple[str, int, int], bool] = {}
+_INSPECTED_OK_MAX = 256
+
+
+def _probe_asset(path: Path) -> str | None:
     if asset_type_for(path) == "image":
         try:
             media.probe_image(path)
@@ -78,6 +78,28 @@ def inspect_asset(project_dir: Path, s: SceneState) -> str | None:
     except media.MediaError as e:
         return f"bad video clip ({e})"
     return None if has_video else "clip has no video stream"
+
+
+def inspect_asset(project_dir: Path, s: SceneState) -> str | None:
+    """`asset_problem` plus a real decode/probe, so a corrupt file is caught. None = renderable.
+
+    Clean results are cached by (resolved path, mtime_ns, size) so the QC panel does not re-decode every
+    scene on each UI rerun. Problems are never cached, so a fixed file or a newly installed ffprobe is picked up.
+    """
+    why = asset_problem(project_dir, s)
+    if why:
+        return why
+    path = project_dir / str(s.asset_path)
+    stat = path.stat()
+    key = (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+    if key in _INSPECTED_OK:
+        return None
+    problem = _probe_asset(path)
+    if problem is None:
+        if len(_INSPECTED_OK) >= _INSPECTED_OK_MAX:
+            del _INSPECTED_OK[next(iter(_INSPECTED_OK))]
+        _INSPECTED_OK[key] = True
+    return problem
 
 
 def normalize_scene_visual(project_dir: Path, s: SceneState) -> NormalizedSceneVisual:
@@ -131,7 +153,7 @@ def check_ready(project_dir: Path, sb: StoryboardFile) -> list[str]:
 
 
 def _final_pass(src: Path, ass_file: Path, out: Path, bgm: Path | None, bgm_volume: float) -> None:
-    sub = f"ass={media.filter_escape(ass_file.name)}:fontsdir={media.filter_escape(str(fonts_dir()))}"
+    sub = f"ass={media.filter_escape(ass_file.name)}:fontsdir={media.filter_escape(str(FONTS_DIR))}"
     norm = "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000"
     args = ["-i", str(src)]
     if bgm:

@@ -73,7 +73,7 @@ def test_attach_rejects_unsupported_extension(planned, tmp_path, name):
         f.attach_asset(pid, 1, src)
     assert f.storyboard(pid).scene(1).asset_path is None
     assert not any(f.store.path(pid, "scenes").iterdir())
-    assert f.store.get(pid).error.startswith("clips:")
+    assert (f.store.get(pid).status, f.store.get(pid).error) == ("planned", None)
 
 
 def test_attach_rejects_unknown_source(planned, tmp_path):

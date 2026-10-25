@@ -13,12 +13,13 @@ from pathlib import Path
 import streamlit as st
 
 from factory import media
-from factory.config import get_settings
+from factory.config import Settings, get_settings
 from factory.pipeline import AUDIO_EXT, Factory
 from factory.publish import youtube
 from factory.qc import qc_warnings
 from factory.render import check_ready
-from factory.schema import IMAGE_EXT, VIDEO_EXT, Project, SceneState
+from factory.schema import IMAGE_EXT, VIDEO_EXT, Project, SceneState, asset_type_for
+from factory.store import NotFound
 
 st.set_page_config(page_title="AI Content Factory", page_icon="🎬", layout="wide")
 F = Factory()
@@ -66,15 +67,29 @@ def preflight() -> dict:
     return media.preflight()
 
 
+@st.cache_data(ttl=60)
+def youtube_status(settings: Settings) -> str:
+    return youtube.status(settings)
+
+
+def nonce(slot: str) -> int:
+    return st.session_state.get(f"nonce-{slot}", 0)
+
+
+def bump(slot: str) -> None:
+    st.session_state[f"nonce-{slot}"] = nonce(slot) + 1
+
+
 # ---------------------------------------------------------------- sidebar
 with st.sidebar:
     st.title("🎬 Content Factory")
     pf = preflight()
+    yt = youtube_status(S)
     planner_mode = "Claude" if S.anthropic_api_key and S.planner != "mock" else "Mock (chưa có ANTHROPIC_API_KEY)"
     st.caption(
         f"FFmpeg: {'✅' if not pf['problems'] else '❌ ' + ', '.join(pf['problems'])}  \n"
         f"Planner: {planner_mode}  \nVoice mặc định: {S.voice_provider}  \n"
-        f"YouTube: {youtube.status(S)}"
+        f"YouTube: {yt}"
     )
     with st.form("create", clear_on_submit=True):
         st.subheader("Project mới")
@@ -106,8 +121,16 @@ if not pid:
     st.info("Tạo project ở sidebar để bắt đầu.")
     st.stop()
 
-p = F.store.get(pid)
-sb = F.store.get_storyboard(pid)
+try:
+    p = F.store.get(pid)
+except (ValueError, OSError, NotFound) as e:
+    st.error(f"Không đọc được project.json của {pid}: {e}")
+    st.stop()
+try:
+    sb = F.store.get_storyboard(pid)
+except (ValueError, OSError) as e:
+    st.error(f"Không đọc được storyboard.json của {pid}: {e}")
+    st.stop()
 pdir = F.store.dir(pid)
 
 # ---------------------------------------------------------------- header
@@ -188,14 +211,18 @@ with tab_sb:
                             st.video(str(asset_file))
                         st.caption(asset_caption(s))
                     kind = st.radio("Loại asset", ["Video", "Image"], horizontal=True, key=f"k{pid}{s.order}")
-                    asset = st.file_uploader(f"Upload {kind}", key=f"c{pid}{s.order}{kind}", type=exts(kind))
+                    asset_slot = f"c{pid}{s.order}"
+                    asset = st.file_uploader(
+                        f"Upload {kind}", key=f"{asset_slot}{kind}{nonce(asset_slot)}", type=exts(kind)
+                    )
                     source = st.selectbox(
                         "Source",
                         ["muse", "upload", "generated"] if kind == "Video" else ["upload", "generated"],
                         key=f"src{pid}{s.order}{kind}",
                     )
                     if asset and st.button("Replace Asset" if s.asset_path else "Attach Asset", key=f"ac{s.order}"):
-                        run(f"Gắn asset scene {s.order}", F.attach_asset, pid, s.order, save_upload(asset), source)
+                        if run(f"Gắn asset scene {s.order}", F.attach_asset, pid, s.order, save_upload(asset), source):
+                            bump(asset_slot)
                         st.rerun()
                     if s.asset_path and st.button("Remove Asset", key=f"rm{s.order}"):
                         run(f"Xoá asset scene {s.order}", F.remove_asset, pid, s.order)
@@ -226,10 +253,26 @@ with tab_render:
         for msg in problems:
             st.warning(msg)
         rc1, rc2 = st.columns(2)
-        bgm = rc1.file_uploader("Nhạc nền (tuỳ chọn, royalty-free)", type=["mp3", "wav", "m4a", "aac"])
-        vol = rc2.slider("BGM volume", 0.0, 0.6, float(S.bgm_volume), 0.05)
+        bgm_slot = f"bgm{pid}"
+        bgm = rc1.file_uploader(
+            "Nhạc nền mới (tuỳ chọn, royalty-free, để trống = giữ nhạc hiện tại)",
+            type=["mp3", "wav", "m4a", "aac"],
+            key=f"{bgm_slot}{nonce(bgm_slot)}",
+        )
+        no_music = (
+            rc1.checkbox("Bỏ nhạc nền", key=f"nobgm{bgm_slot}{nonce(bgm_slot)}", disabled=p.bgm is None)
+            and p.bgm is not None
+        )
+        vol_default = float(p.bgm.volume if p.bgm else S.bgm_volume)
+        vol = rc2.slider("BGM volume", 0.0, max(0.6, vol_default), vol_default, 0.05)
+        rc2.caption(f"Nhạc nền hiện tại: {Path(p.bgm.file).name}" if p.bgm else "Chưa có nhạc nền")
+
+        def render_with_music(label: str) -> None:
+            if run(label, F.render, pid, save_upload(bgm) if bgm else None, vol, no_bgm=no_music):
+                bump(bgm_slot)
+
         if st.button("Render", type="primary", disabled=bool(problems)):
-            run("Render", F.render, pid, save_upload(bgm) if bgm else None, vol)
+            render_with_music("Render")
             st.rerun()
 
         r = p.render
@@ -259,12 +302,22 @@ with tab_render:
             )
             q1, q2 = st.columns([1, 3])
             order = q1.selectbox("Scene", [s.order for s in sb.scenes], key=f"qc_scene{pid}")
+            qc_slot = f"qc{pid}{order}"
             new_asset = q2.file_uploader(
-                "Asset mới (video hoặc ảnh)", key=f"qc_clip{pid}{order}", type=exts("Video") + exts("Image")
+                "Asset mới (video hoặc ảnh)",
+                key=f"qc_clip{pid}{order}{nonce(qc_slot)}",
+                type=exts("Video") + exts("Image"),
+            )
+            new_kind = asset_type_for(new_asset.name) if new_asset else None
+            new_source = q1.selectbox(
+                "Source",
+                ["muse", "upload", "generated"] if new_kind == "video" else ["upload", "generated"],
+                key=f"qc_src{pid}{order}{new_kind}",
             )
             if new_asset and st.button(f"Thay asset scene {order} & render lại", type="primary"):
-                if run(f"Thay asset scene {order}", F.attach_asset, pid, order, save_upload(new_asset)):
-                    run("Render lại", F.render, pid, save_upload(bgm) if bgm else None, vol)
+                if run(f"Thay asset scene {order}", F.attach_asset, pid, order, save_upload(new_asset), new_source):
+                    bump(qc_slot)
+                    render_with_music("Render lại")
                 st.rerun()
         muse = st.number_input(
             "Chi phí Muse thực tế cho video này (USD)",
@@ -278,7 +331,6 @@ with tab_render:
 
 # ---------------------------------------------------------------- publish
 with tab_pub:
-    yt = youtube.status(S)
     if yt == "not_configured":
         st.info(
             "YouTube not configured: lưu file OAuth client JSON (Desktop app) vào "
@@ -290,6 +342,7 @@ with tab_pub:
             st.warning("Chưa kết nối kênh (hoặc token đã hết hạn/bị thu hồi): bấm Connect YouTube.")
         if st.button("Connect YouTube (mở trình duyệt)"):
             run("Kết nối YouTube", youtube.connect, S)
+            youtube_status.clear()
             st.rerun()
         privacy = st.radio("Privacy", ["private", "unlisted"], horizontal=True)
         st.caption("Dự án Google API chưa được xác minh sẽ bị YouTube ép video về private, kể cả khi chọn unlisted.")
@@ -300,6 +353,7 @@ with tab_pub:
         can_upload = yt == "connected" and p.render.status == "done" and not already_uploaded
         if st.button("Upload lên YouTube", type="primary", disabled=not can_upload):
             run("Upload YouTube", F.publish, pid, youtube.YouTubePublisher(S), privacy, force=force)
+            youtube_status.clear()
             st.rerun()
     if p.youtube_url:
         st.success(f"Đã upload (privacy thực tế: {p.publish_privacy}): {p.youtube_url}")

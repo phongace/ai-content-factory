@@ -39,7 +39,7 @@ def test_tc09_mock_upload_persists_ids():
     pid = fake_rendered(f)
     pub = MockPublisher()
     p = f.publish(pid, pub, "unlisted")
-    assert p.youtube_video_id == "mock0000001" and p.youtube_url.endswith("mock0000001")
+    assert p.youtube_video_id == "mock0000001" and p.youtube_url is not None and p.youtube_url.endswith("mock0000001")
     assert (p.publish_status, p.publish_privacy, p.status) == ("uploaded", "unlisted", "published")
     assert p.published_at
     assert pub.uploads[0].title == f.storyboard(pid).title
@@ -119,8 +119,10 @@ def fake_creds():
 
 
 class FakeFlow:
-    def __init__(self, result):
-        self.result, self.kwargs, self.loaded = result, None, None
+    def __init__(self, result: object):  # what run_local_server returns, or raises when it is an Exception
+        self.result = result
+        self.kwargs: dict[str, object] = {}
+        self.loaded: tuple[str, list[str]] | None = None
 
     def run_local_server(self, **kwargs):
         self.kwargs = kwargs

@@ -79,10 +79,3 @@ def voice_module():
     from app.services import voice  # imports app.config -> creates MPT_HOME/config.toml
 
     return voice
-
-
-def fonts_dir() -> Path:
-    """Bundled fonts dir of the installed mpt wheel (Be Vietnam Pro is OFL licensed)."""
-    import app
-
-    return Path(app.__file__).resolve().parent / "_assets" / "resource" / "fonts"

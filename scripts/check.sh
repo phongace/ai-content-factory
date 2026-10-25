@@ -12,7 +12,7 @@ for key in FFMPEG_PATH FFPROBE_PATH; do
 done
 echo "== ruff lint";       uv run ruff check factory ui tests
 echo "== ruff format";     uv run ruff format --check factory ui tests
-echo "== typecheck";       uvx --quiet pyright@1.1.400 --pythonpath .venv/bin/python factory ui
+echo "== typecheck";       uvx --quiet pyright@1.1.400 --pythonpath .venv/bin/python factory ui tests
 echo "== tests";           uv run pytest "$@"
 echo "== preflight";       uv run factory preflight > /dev/null && echo "ffmpeg ok"
 echo "ALL CHECKS PASSED"

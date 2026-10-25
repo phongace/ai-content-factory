@@ -1,6 +1,6 @@
 # Implementation status
 
-Cập nhật: 2026-10-24, branch `feature/poc-video-factory-v1`. Stack: Python + Streamlit + `mpt==1.3.8`.
+Cập nhật: 2026-10-25, branch `feature/poc-video-factory-v1`. Stack: Python + Streamlit + `mpt==1.3.8`.
 Status: DONE / PARTIAL / BLOCKED_EXTERNAL / NOT_STARTED.
 Kiểm chứng: 102 test tự động pass (74 logic + 28 render thật bằng FFmpeg), ruff + pyright sạch.
 
@@ -66,6 +66,24 @@ Thay đổi hành vi so với bản cũ:
 - Thay asset hoặc xoá asset đều đặt `assets_changed_at`, nên `render_stale` bật như trước.
 
 Giới hạn đã biết: ảnh nhỏ hơn 1080x1920 bị phóng to (mờ), chưa có cảnh báo độ phân giải; PNG có alpha thì kênh alpha bị bỏ (chưa kiểm tra riêng); ảnh JPEG có EXIF xoay được xoay đúng khi render (kiểm tay một lần với Orientation=6, không có test tự động) nhưng caption UI hiện kích thước lưu trong file, chưa xoay. Zoom chậm (10%) là cố định, không cấu hình.
+
+## Batch sửa lỗi review (2026-10-25)
+
+Test mới: `tests/test_fixes_batch.py` (7 test, không render, không network). `tests/test_assets.py` đổi 1 assert: upload sai đuôi không còn đẩy project sang `error`.
+
+| Mã | Status | Thay đổi |
+|---|---|---|
+| K3 | DONE | `edit_scene` chỉ đặt `assets_changed_at` khi narration đổi thật (so sánh sau `strip`); sửa prompt không làm render stale |
+| K2 | DONE | Nhạc nền lưu theo project: copy vào `renders/bgm.<đuôi>`, `Project.bgm` + `RenderInfo.bgm` (file, sha256, volume), tính vào `render_stale`. Render không truyền nhạc thì dùng lại nhạc đã lưu. Bỏ nhạc: `factory render --no-bgm` hoặc checkbox "Bỏ nhạc nền". `BGM_FILE` chỉ là mặc định của lần render đầu. Thêm `--bgm-volume` cho CLI (volume nay được lưu nên cần cách chỉnh) |
+| K6 | DONE | libass `fontsdir` trỏ `factory/assets/fonts/` (chỉ `BeVietnamPro-Bold.ttf` + `OFL.txt`), không còn trỏ vào thư mục font của MPT (có font thương mại). Đo bằng log libass: style `Be Vietnam Pro` bold chọn đúng face 700. `THIRD_PARTY_NOTICES.md` cập nhật |
+| N1 | DONE | `attach_asset` là no-op khi sha256 file mới = asset hiện tại (không cộng phí Muse, không touch). Uploader đổi key sau mỗi lần gắn thành công nên không bấm lặp được. Panel QC có chọn Source (video mặc định `muse`, ảnh mặc định `upload`) thay vì ngầm tính Muse |
+| N2 | DONE | Kiểm tra đuôi/source/scene và probe bản copy tạm trước khi vào stage `clips`; input sai báo lỗi mà không đổi status |
+| K1 | DONE | UI bắt lỗi đọc `project.json` / `storyboard.json` hỏng, hiện `st.error` có tên file rồi `st.stop()` |
+| N3 | DONE | Description cắt theo byte UTF-8 (dưới 5000 byte, không cắt giữa ký tự), title tối đa 100 ký tự, bỏ `<` `>`; áp cả ở `edit_metadata`, `publish` và upload YouTube |
+| N4 | DONE | `inspect_asset` cache kết quả sạch theo (path đã resolve, mtime_ns, size), tối đa 256 mục; lỗi không bị cache |
+| N5 | DONE | `youtube.status()` gọi 1 lần mỗi rerun, cache `st.cache_data(ttl=60)`, xoá cache sau Connect và Upload |
+
+Hành vi đổi: project render trước batch này (chưa có `bgm` trong project.json) mà từng mix nhạc sẽ render lại không nhạc, vì app không biết file nhạc cũ; upload lại nhạc một lần là đủ.
 
 ## Đã biết / chưa xác minh
 
