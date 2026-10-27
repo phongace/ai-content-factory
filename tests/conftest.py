@@ -65,6 +65,7 @@ def isolated_env(tmp_path, monkeypatch):
         "YOUTUBE_CLIENT_ID",
         "YOUTUBE_CLIENT_SECRET",
         "YOUTUBE_CLIENT_SECRET_FILE",
+        "YOUTUBE_API_KEY",
         "BGM_FILE",
         "PLANNER",
     ):

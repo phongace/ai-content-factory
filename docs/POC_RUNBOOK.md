@@ -28,6 +28,7 @@ Mọi thứ đều optional, thiếu thì app tự chạy chế độ mock:
 | `ANTHROPIC_API_KEY` | Planner dùng MockPlanner (kịch bản mẫu) |
 | `VOICE_PROVIDER=voicestudio` + `VOICESTUDIO_*` | Voice dùng mock (tiếng tone) hoặc upload audio tay |
 | `data/secrets/youtube_client_secret.json` (hoặc `YOUTUBE_CLIENT_SECRET_FILE`; fallback `YOUTUBE_CLIENT_ID/SECRET`) | Tab Publish báo "YouTube not configured", render vẫn chạy |
+| `YOUTUBE_API_KEY` | Discover nguồn YouTube báo "YouTube discovery not configured"; Manual URL/Content vẫn chạy. Token OAuth upload không dùng được cho search (chỉ có scope `youtube.upload`) |
 | `BGM_FILE` | Không có nhạc nền, hoặc upload nhạc ngay trong UI. Chỉ là nhạc mặc định cho lần render đầu của project; sau đó project dùng nhạc đã lưu |
 
 ## 3. Chạy app
@@ -35,6 +36,22 @@ Mọi thứ đều optional, thiếu thì app tự chạy chế độ mock:
 ```bash
 uv run streamlit run ui/studio.py    # http://localhost:8501
 ```
+
+## Discovery Engine v0
+
+Màn **Discover** (radio "Màn hình" ở sidebar) tìm reference, chấm điểm bằng rule, cho Claude phân tích thành opportunity (angle, 5 hook có điểm, format) rồi **Generate Video** đẩy vào đúng pipeline hiện có (`create_project` + `plan`). Reference chỉ dùng để rút pattern; transcript của reference không bao giờ được gửi cho planner, planner chỉ nhận angle, hook đã chọn và story beats.
+
+Ba nguồn:
+
+- **Manual URL**: dán URL → (tuỳ chọn) title / transcript / notes → "Lưu URL" → Analyze → Generate Video. URL YouTube được lấy metadata (title, kênh, ngày đăng, views/likes/comments) nếu có `YOUTUBE_API_KEY`; không có key, video private hay API lỗi thì URL vẫn được lưu, lý do ghi ở `enrich_error`. TikTok/Facebook/khác: chỉ lưu URL, không crawl, tự bổ sung text.
+- **Manual Content**: nhập topic / title / transcript hoặc tóm tắt / notes (URL tuỳ chọn) → "Lưu nội dung" → Analyze → Generate Video. Dùng khi thấy video viral trên TikTok/Facebook: dán transcript tự chép.
+- **YouTube**: niche + keywords + lookback (mặc định 30 ngày) + max results (mặc định 20) → Search → xếp hạng → Analyze → Generate Video. Một lần search = 1 `search.list` + 1 `videos.list` gom ID (không N+1). Search giống hệt trong `DISCOVERY_CACHE_HOURS` (mặc định 12h) lấy từ cache, không tốn quota. `search.list` có quota riêng khoảng 100 lần/ngày.
+
+**Viral score** (0-10, chỉ để xếp hạng, không phải dự đoán): `0.45 view_velocity + 0.2 engagement + 0.15 recency + 0.2 reach`. view_velocity = views/ngày (log, 100k/ngày = 10), engagement = (likes + 2 comments)/views (8% = 10), recency giảm một nửa mỗi 14 ngày, reach = tổng views (log, 10M = 10). Tuổi video tối thiểu 6 giờ để video mới đăng không bị velocity ảo. Không có views hoặc ngày đăng thì không chấm (xếp sau). Từng thành phần lưu trong `score.signals` / `score.raw`.
+
+**Opportunity**: 1 call Claude trả topic, angle, hook pattern, 5 hook (mỗi hook chấm curiosity / clarity / tension / novelty / payoff), format, story structure, why it may work và 4 điểm (novelty, channel fit, visual feasibility, production efficiency). Code tự tính `overall` của hook (trọng số 0.25/0.2/0.2/0.15/0.2), chọn hook cao nhất làm mặc định và tính điểm opportunity (viral_signal lấy từ rule-based score, không từ LLM). Không có `ANTHROPIC_API_KEY` thì dùng analyzer mock. Trên UI đổi hook / format được trước khi Generate; "Save Pattern" lưu tham chiếu vào `data/patterns/`.
+
+**Generate Video** tạo project có `brief` (topic, angle, hook, format, beats, `source_discovery_id`, `source_opportunity_id`, URL reference) rồi chạy planner ngay; storyboard sẵn sàng, không có bước duyệt bắt buộc. Sau đó làm tiếp như flow thường (voice, asset, render, publish). Topic nhập tay ở sidebar vẫn chạy y như cũ (không có brief).
 
 ## 4–10. Flow trong UI
 
@@ -72,6 +89,13 @@ uv run factory publish <project_id> --privacy private
 uv run factory publish <project_id> --privacy private --title "Test private upload" --description "Kiểm tra OAuth"
 uv run factory status <project_id>
 uv run factory list
+uv run factory discover-url "https://youtu.be/<id>" [--title ... --transcript-file t.txt --notes ...]
+uv run factory discover-text --topic "Ngủ 8 tiếng là lầm tưởng" --transcript-file t.txt [--url ...]
+uv run factory discover-youtube "productivity" --keywords "morning habits" --days 30 --max 20 [--language vi]
+uv run factory candidates            # reference đã lưu, xếp theo viral score
+uv run factory analyze <candidate_id> --language vi [--niche "self-improvement"]
+uv run factory opportunity <opportunity_id>
+uv run factory generate <opportunity_id> [--hook 2] [--format MYTH_BUST] [--duration 30]   # in ra project_id
 uv run factory demo --music          # offline: 4 scene video / ảnh / video / ảnh + voice mock + phụ đề + nhạc
 ```
 
@@ -104,3 +128,5 @@ uv run pytest -m "not media" # bản nhanh, bỏ test render
 ## Dữ liệu
 
 `data/projects/<id>/`: `project.json` (status, stage, error, cost, YouTube ID), `storyboard.json` (scene, prompt, `asset_type`/`asset_path`/`asset_source`, voice, duration thật; project cũ chỉ có `clip_file` vẫn load được, tự suy ra video), `scenes/` (file video/ảnh gốc của từng scene, `scenes/normalized/` là cache clip từ ảnh, xoá được), `audio/`, `subtitles/final.ass|srt`, `renders/final-short.mp4`, `renders/bgm.<đuôi>` (bản copy nhạc nền của project), `renders/engine/` (cache render của MPT, xoá được), `logs/events.log`.
+
+Discovery: `data/discoveries/<candidate_id>.json` (reference, metrics, score), `data/discoveries/_search_cache/` (kết quả search YouTube, xoá được), `data/opportunities/<id>.json` (angle, hook, format, điểm, `project_ids`), `data/patterns/<id>.json` (Save Pattern).

@@ -66,10 +66,24 @@ class Settings:
     youtube_client_id: str | None
     youtube_client_secret: str | None
     youtube_client_secret_file: Path
+    youtube_api_key: str | None
+    discovery_cache_hours: float
 
     @property
     def projects_dir(self) -> Path:
         return self.data_dir / "projects"
+
+    @property
+    def discovery_dir(self) -> Path:
+        return self.data_dir / "discoveries"
+
+    @property
+    def opportunities_dir(self) -> Path:
+        return self.data_dir / "opportunities"
+
+    @property
+    def patterns_dir(self) -> Path:
+        return self.data_dir / "patterns"
 
     @property
     def mpt_home(self) -> Path:
@@ -123,4 +137,7 @@ def get_settings() -> Settings:
             if secret_file
             else data_dir / "secrets" / "youtube_client_secret.json"
         ),
+        # public search/videos.list for discovery; the upload OAuth token only has the youtube.upload scope
+        youtube_api_key=_env("YOUTUBE_API_KEY"),
+        discovery_cache_hours=_num("DISCOVERY_CACHE_HOURS", 12.0),
     )

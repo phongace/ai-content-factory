@@ -54,6 +54,17 @@ Lưu ý quan trọng:
 - Upload tốn quota API, quota mặc định chỉ đủ một số ít video/ngày. Xem quota trong Console. Hết quota thì lệnh báo lỗi và không tự thử lại; quota reset lúc nửa đêm giờ Pacific.
 - Ý nghĩa từng thông báo lỗi YouTube và cách xử lý: xem `docs/POC_RUNBOOK.md` mục "Lỗi YouTube".
 
+## 4b. YouTube API key cho Discovery (tuỳ chọn)
+
+Chỉ cần cho nguồn **YouTube** của màn Discover (và để lấy metadata khi dán link YouTube). Manual URL / Manual Content chạy không cần key. Token OAuth ở §4 chỉ có scope `youtube.upload` nên không search được; không mở rộng scope đó.
+
+1. Cùng Google Cloud project ở §4 (đã bật YouTube Data API v3) → Credentials → **Create credentials → API key**.
+2. Bấm vào key → **API restrictions: Restrict key → chỉ chọn YouTube Data API v3**. Application restrictions để None (app chạy local, không có referrer/IP cố định).
+3. Thêm vào `.env.local`: `YOUTUBE_API_KEY=<key>`. Không dán key vào chat, log hay git. Khởi động lại UI để đọc key.
+4. Kiểm tra: `uv run factory discover-youtube "productivity" --max 5`.
+
+Quota: `search.list` có quota riêng (khoảng 100 lần/ngày), `videos.list` tốn 1 đơn vị từ quota chung. Search giống hệt trong `DISCOVERY_CACHE_HOURS` (mặc định 12h) dùng cache, không gọi API.
+
 ## 5. Nhạc nền
 
 Chọn nguồn royalty-free có license rõ (ví dụ YouTube Audio Library). Không dùng nhạc bundled trong MoneyPrinterTurbo.

@@ -17,6 +17,7 @@ from .schema import (
     ASSET_SOURCES,
     AssetSource,
     BgmSetting,
+    ContentBrief,
     PlannerInput,
     Project,
     StoryboardFile,
@@ -78,12 +79,14 @@ class Factory:
         language: str = "vi",
         visual_style: str = "cinematic, realistic, soft natural light",
         voice_preset: str = "default",
+        brief: ContentBrief | None = None,
     ) -> Project:
         inp = PlannerInput(
             topic=topic,
             target_duration=target_duration,
             language=language,  # type: ignore[arg-type]
             visual_style=visual_style,
+            brief=brief,
         )
         return self.store.create(inp, voice_preset)
 
@@ -91,7 +94,11 @@ class Factory:
         p = self.store.get(pid)
         planner = planner or get_planner(self.s)
         inp = PlannerInput(
-            topic=p.topic, target_duration=p.target_duration, language=p.language, visual_style=p.visual_style
+            topic=p.topic,
+            target_duration=p.target_duration,
+            language=p.language,
+            visual_style=p.visual_style,
+            brief=p.brief,
         )
         with self.stage(pid, "planning"):
             try:

@@ -43,11 +43,31 @@ def now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="microseconds")
 
 
+class ContentBrief(BaseModel):
+    """Creative direction from a discovery opportunity. Optional: a plain topic plans exactly as before.
+
+    The discovery/opportunity ids, hook and format stay on the project so later analytics can map a video back to
+    the opportunity that produced it.
+    """
+
+    topic: str = Field(min_length=3, max_length=300)
+    angle: str = Field(min_length=1, max_length=600)
+    hook: str = Field(min_length=1, max_length=300)
+    hook_pattern: str = ""
+    format_id: str
+    story_beats: list[str] = Field(default_factory=list)
+    pacing: str = "fast"
+    source_discovery_id: str | None = None
+    source_opportunity_id: str | None = None
+    reference_url: str | None = None
+
+
 class PlannerInput(BaseModel):
     topic: str = Field(min_length=3, max_length=300)
     target_duration: int = Field(default=30, ge=MIN_TOTAL, le=MAX_TOTAL)
     language: Language = "vi"
     visual_style: str = Field(default="cinematic, realistic, soft natural light", max_length=200)
+    brief: ContentBrief | None = None
 
 
 class PlannedScene(BaseModel):
@@ -221,6 +241,7 @@ class Project(BaseModel):
     language: Language
     visual_style: str
     voice_preset: str = "default"
+    brief: ContentBrief | None = None  # set when the project was generated from a discovery opportunity
     status: Status = "draft"
     current_stage: Stage = "created"
     error: str | None = None

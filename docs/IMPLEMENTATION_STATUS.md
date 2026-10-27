@@ -1,8 +1,8 @@
 # Implementation status
 
-Cập nhật: 2026-10-25, branch `feature/poc-video-factory-v1`. Stack: Python + Streamlit + `mpt==1.3.8`.
+Cập nhật: 2026-10-27, branch `feature/discovery-engine-v0` (từ `feature/poc-video-factory-v1`). Stack: Python + Streamlit + `mpt==1.3.8`.
 Status: DONE / PARTIAL / BLOCKED_EXTERNAL / NOT_STARTED.
-Kiểm chứng: 102 test tự động pass (74 logic + 28 render thật bằng FFmpeg), ruff + pyright sạch.
+Kiểm chứng: 172 test tự động pass (`scripts/check.sh`, gồm 48 test discovery mới), ruff + pyright sạch.
 
 ## Backlog (02_Backlog)
 
@@ -84,6 +84,24 @@ Test mới: `tests/test_fixes_batch.py` (7 test, không render, không network).
 | N5 | DONE | `youtube.status()` gọi 1 lần mỗi rerun, cache `st.cache_data(ttl=60)`, xoá cache sau Connect và Upload |
 
 Hành vi đổi: project render trước batch này (chưa có `bgm` trong project.json) mà từng mix nhạc sẽ render lại không nhạc, vì app không biết file nhạc cũ; upload lại nhạc một lần là đủ.
+
+## Discovery Engine v0 (2026-10-27)
+
+Branch `feature/discovery-engine-v0`. Module mới `factory/discovery/` (models, formats, scoring, store, youtube, analyzer, service), CLI `discover-url` / `discover-text` / `discover-youtube` / `candidates` / `analyze` / `opportunity` / `generate`, màn Discover trong `ui/studio.py`. Test: `tests/test_discovery.py`.
+
+| Mục | Status | Ghi chú |
+|---|---|---|
+| Manual URL | DONE | Lưu mọi URL; YouTube được enrich qua `videos.list` khi có `YOUTUBE_API_KEY`, lỗi ghi vào `enrich_error` thay vì fail. Không crawl TikTok/Facebook |
+| Manual content | DONE | Topic / title / transcript / notes / URL tuỳ chọn; sửa bổ sung sau được |
+| YouTube discovery | DONE (mock) | `search.list` + 1 `videos.list` gom ID, cache theo query `DISCOVERY_CACHE_HOURS`. Chưa chạy với key thật |
+| Viral score | DONE | Rule-based, lưu từng signal + raw; không chia cho 0, tuổi tối thiểu 6h |
+| Opportunity analyzer | DONE (mock) / PARTIAL (Claude) | Strict tool `submit_opportunity`, retry khi output sai (dùng chung vòng `ClaudeToolClient` với planner). Chưa chạy với Claude thật vì chưa có `ANTHROPIC_API_KEY` |
+| Hook engine | DONE | 5 hook / 1 call, sub-score curiosity/clarity/tension/novelty/payoff, overall + chọn hook trong code |
+| Format library | DONE | 10 format built-in (`factory/discovery/formats.py`), user override được |
+| Generate Video | DONE | Opportunity → `ContentBrief` → `create_project` + `plan` có sẵn; `Project.brief` giữ discovery/opportunity id, hook, format |
+| Planner backward compatible | DONE | `PlannerInput.brief` optional; project cũ không có `brief` vẫn load |
+
+Cần người làm: tạo `YOUTUBE_API_KEY` (MANUAL_SETUP §4b), điền `ANTHROPIC_API_KEY` để đánh giá chất lượng opportunity thật.
 
 ## Đã biết / chưa xác minh
 

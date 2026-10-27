@@ -1,7 +1,7 @@
 """Streamlit UI for the POC: `uv run streamlit run ui/studio.py`.
 
-Flow: Create -> Plan -> Storyboard (copy Muse prompts, upload a video or image per scene, voice) -> Render -> QC
--> Publish.
+Flow: Discover (reference -> opportunity -> Generate Video) or Create -> Plan -> Storyboard (copy Muse prompts,
+upload a video or image per scene, voice) -> Render -> QC -> Publish.
 Deliberately plain: internal tool, one user, no timeline editor.
 """
 
@@ -14,6 +14,11 @@ import streamlit as st
 
 from factory import media
 from factory.config import Settings, get_settings
+from factory.discovery.formats import FORMATS
+from factory.discovery.models import ContentOpportunity, DiscoveryCandidate
+from factory.discovery.scoring import age_days
+from factory.discovery.service import Discovery
+from factory.discovery.youtube import NOT_CONFIGURED
 from factory.pipeline import AUDIO_EXT, Factory
 from factory.publish import youtube
 from factory.qc import qc_warnings
@@ -24,6 +29,7 @@ from factory.store import NotFound
 st.set_page_config(page_title="AI Content Factory", page_icon="🎬", layout="wide")
 F = Factory()
 S = get_settings()
+D = Discovery(F)
 
 
 def save_upload(upload) -> Path:
@@ -147,9 +153,238 @@ def act_upload(pid: str, force: bool) -> None:
     youtube_status.clear()
 
 
+def act_discover_url() -> None:
+    ss = st.session_state
+    c = run("Lưu URL", D.add_url, ss["d_url"], ss["d_url_title"], ss["d_url_transcript"], ss["d_url_notes"])
+    if isinstance(c, DiscoveryCandidate):
+        ss["cid"] = c.id
+
+
+def act_discover_content() -> None:
+    ss = st.session_state
+    c = run(
+        "Lưu nội dung",
+        D.add_content,
+        ss["d_topic"],
+        ss["d_title"],
+        ss["d_transcript"],
+        ss["d_notes"],
+        ss["d_src_url"],
+    )
+    if isinstance(c, DiscoveryCandidate):
+        ss["cid"] = c.id
+
+
+def act_search_youtube() -> None:
+    ss = st.session_state
+    res = run(
+        "Tìm trên YouTube",
+        D.search_youtube,
+        ss["d_niche"],
+        ss["d_keywords"],
+        ss["d_days"],
+        ss["d_max"],
+        ss["d_lang"],
+    )
+    if isinstance(res, tuple):
+        found, cached = res
+        ss["flash"] = ("success", f"{len(found)} video ({'từ cache, không tốn quota' if cached else 'YouTube API'})")
+
+
+def act_edit_candidate(cid: str) -> None:
+    ss = st.session_state
+    run(
+        "Lưu reference",
+        D.edit_candidate,
+        cid,
+        ss[f"ct{cid}"],
+        ss[f"cx{cid}"],
+        ss[f"cn{cid}"],
+        ss[f"cp{cid}"],
+    )
+
+
+def act_analyze(cid: str) -> None:
+    ss = st.session_state
+    ss["cid"] = cid
+    o = run("Analyze", D.analyze, cid, ss.get("d_an_lang", "vi"), ss.get("d_an_niche") or None)
+    if isinstance(o, ContentOpportunity):
+        ss["oid"] = o.id
+
+
+def act_choose(oid: str) -> None:
+    ss = st.session_state
+    run("Lưu lựa chọn", D.choose, oid, ss[f"oh{oid}"], ss[f"of{oid}"])
+
+
+def act_save_pattern(oid: str) -> None:
+    run("Save Pattern", D.save_pattern, oid)
+
+
+def act_generate_video(oid: str) -> None:
+    ss = st.session_state
+    p = run(
+        "Generate Video",
+        D.generate_video,
+        oid,
+        ss[f"od{oid}"],
+        ss[f"os{oid}"],
+        hook_index=ss[f"oh{oid}"],
+        format_id=ss[f"of{oid}"],
+    )
+    if isinstance(p, Project):
+        ss["pid"] = p.id
+        ss["page"] = "Projects"
+
+
+def candidate_age(c: DiscoveryCandidate) -> str:
+    age = age_days(c.published_at)
+    if age is None:
+        return "-"
+    return f"{age * 24:.0f}h" if age < 1 else f"{age:.0f} ngày"
+
+
+def candidate_row(c: DiscoveryCandidate) -> None:
+    with st.container(border=True):
+        left, mid, right = st.columns([5, 3, 1])
+        title = c.label if not c.url else f"[{c.label[:90]}]({c.url})"
+        left.markdown(f"**{title}**")
+        left.caption(f"{c.author or c.platform or c.source} · {c.source}")
+        views = c.metrics.get("views")
+        vpd = c.score.raw.get("views_per_day") if c.score else None
+        mid.caption(
+            f"Views {views:,} · Age {candidate_age(c)}  \nViews/day {vpd:,.0f}" if views is not None and vpd else "-"
+        )
+        if c.score:
+            sig = " · ".join(f"{k} {v:g}" for k, v in c.score.signals.items())
+            mid.caption(f"**Viral {c.score.viral_score:g}/10** · {sig}")
+        else:
+            mid.caption("Viral: chưa có metrics")
+        right.button("Analyze", key=f"an{c.id}", on_click=act_analyze, args=(c.id,))
+
+
+def candidate_detail(c: DiscoveryCandidate) -> None:
+    st.subheader("Reference đang chọn")
+    st.caption(f"{c.id} · {c.source}" + (f" · {c.url}" if c.url else ""))
+    if c.enrich_error:
+        st.info(c.enrich_error)
+    with st.expander("Bổ sung title / transcript / notes", expanded=not (c.title or c.transcript or c.topic)):
+        st.text_input("Topic", c.topic or "", key=f"cp{c.id}")
+        st.text_input("Title", c.title or "", key=f"ct{c.id}")
+        st.text_area("Transcript / summary", c.transcript or "", key=f"cx{c.id}", height=120)
+        st.text_area("Notes", c.notes or "", key=f"cn{c.id}", height=70)
+        st.button("Lưu reference", key=f"ce{c.id}", on_click=act_edit_candidate, args=(c.id,))
+    st.button("Analyze reference này", type="primary", key=f"an2{c.id}", on_click=act_analyze, args=(c.id,))
+
+
+def opportunity_panel(o: ContentOpportunity) -> None:
+    st.subheader(f"Opportunity · {o.scores.overall:g}/10")
+    st.caption(f"{o.id} · analyzer {o.analyzer} · ${o.cost_usd:.4f}")
+    st.markdown(f"**Topic:** {o.topic}  \n**Angle:** {o.angle}  \n**Hook pattern:** {o.hook_pattern}")
+    hook_labels = [f"{h.overall:.1f} · {h.text}" for h in o.hooks]
+    st.radio(
+        "Hook (chọn 1)",
+        range(len(o.hooks)),
+        index=o.selected_hook,
+        format_func=lambda i: hook_labels[i],
+        key=f"oh{o.id}",
+    )
+    ids = list(FORMATS)
+    st.selectbox(
+        "Format",
+        ids,
+        index=ids.index(o.format_id),
+        format_func=lambda i: f"{FORMATS[i].name} · {' → '.join(FORMATS[i].story_beats)}",
+        key=f"of{o.id}",
+    )
+    st.markdown("**Why it may work**  \n" + "  \n".join(f"- {w}" for w in o.why_it_may_work))
+    st.caption(" · ".join(f"{k} {v:g}" for k, v in o.scores.model_dump().items() if v is not None and k != "overall"))
+    fmt = FORMATS[o.format_id]
+    g1, g2 = st.columns(2)
+    g1.slider("Thời lượng (s)", 20, 45, round(sum(fmt.target_duration) / 2), key=f"od{o.id}")
+    g2.text_input("Visual style", "cinematic, realistic, soft natural light", key=f"os{o.id}")
+    b1, b2, b3 = st.columns(3)
+    b1.button("Generate Video", type="primary", key=f"gen{o.id}", on_click=act_generate_video, args=(o.id,))
+    b2.button(
+        "Pattern đã lưu" if o.saved_pattern else "Save Pattern",
+        key=f"sp{o.id}",
+        disabled=o.saved_pattern,
+        on_click=act_save_pattern,
+        args=(o.id,),
+    )
+    b3.button("Lưu hook/format", key=f"ch{o.id}", on_click=act_choose, args=(o.id,))
+    if o.project_ids:
+        st.caption("Projects đã tạo: " + ", ".join(o.project_ids))
+
+
+def discover_page() -> None:
+    st.header("Discover")
+    src = st.radio("Source", ["YouTube", "Manual URL", "Manual Content"], horizontal=True, key="d_src")
+    if src == "YouTube":
+        if not D.youtube_configured:
+            st.info(NOT_CONFIGURED)
+        with st.container(border=True):
+            y1, y2 = st.columns(2)
+            y1.text_input("Niche", key="d_niche")
+            y2.text_input("Keywords", key="d_keywords")
+            y3, y4, y5 = st.columns(3)
+            y3.slider("Lookback (ngày)", 1, 90, 30, key="d_days")
+            y4.slider("Max results", 5, 50, 20, key="d_max")
+            y5.selectbox("Ngôn ngữ kết quả", ["vi", "en", None], format_func=lambda x: x or "bất kỳ", key="d_lang")
+            st.button("Search", type="primary", disabled=not D.youtube_configured, on_click=act_search_youtube)
+    elif src == "Manual URL":
+        with st.container(border=True):
+            st.text_input("URL (YouTube / TikTok / Facebook / khác)", key="d_url")
+            st.text_input("Title (tuỳ chọn)", key="d_url_title")
+            st.text_area("Transcript / text (tuỳ chọn)", key="d_url_transcript", height=100)
+            st.text_input("Notes (tuỳ chọn)", key="d_url_notes")
+            st.caption("YouTube: tự lấy metadata nếu có YOUTUBE_API_KEY. Nền tảng khác: chỉ lưu URL, không crawl.")
+            st.button("Lưu URL", type="primary", on_click=act_discover_url)
+    else:
+        with st.container(border=True):
+            st.text_input("Topic", key="d_topic")
+            st.text_input("Title", key="d_title")
+            st.text_area("Transcript / summary", key="d_transcript", height=120)
+            st.text_input("Notes", key="d_notes")
+            st.text_input("Source URL (tuỳ chọn)", key="d_src_url")
+            st.button("Lưu nội dung", type="primary", on_click=act_discover_content)
+
+    a1, a2, a3 = st.columns(3)
+    a1.selectbox("Ngôn ngữ video", ["vi", "en"], key="d_an_lang")
+    a2.text_input("Channel niche (cho Analyze)", key="d_an_niche")
+    top = a3.slider("Hiện top", 5, 50, 10, key="d_top")
+
+    candidates = D.candidates()
+    st.subheader(f"Candidates ({len(candidates)})")
+    if not candidates:
+        st.caption("Chưa có reference nào.")
+    for c in candidates[:top]:
+        candidate_row(c)
+
+    cid = st.session_state.get("cid")
+    current = D.store.find_candidate(cid) if cid else None
+    if current is None:
+        return
+    st.divider()
+    candidate_detail(current)
+    opps = D.store.list_opportunities(current.id)
+    if not opps:
+        return
+    oid = st.session_state.get("oid")
+    ids = [o.id for o in opps]
+    chosen = st.selectbox(
+        "Opportunities của reference này",
+        ids,
+        index=ids.index(oid) if oid in ids else 0,
+        format_func=lambda i: next(f"{o.scores.overall:g} · {o.topic[:60]}" for o in opps if o.id == i),
+    )
+    opportunity_panel(next(o for o in opps if o.id == chosen))
+
+
 # ---------------------------------------------------------------- sidebar
 with st.sidebar:
     st.title("🎬 Content Factory")
+    page = st.radio("Màn hình", ["Projects", "Discover"], horizontal=True, key="page")
     pf = preflight()
     yt = youtube_status(S)
     planner_mode = "Claude" if S.anthropic_api_key and S.planner != "mock" else "Mock (chưa có ANTHROPIC_API_KEY)"
@@ -182,6 +417,10 @@ with st.sidebar:
 if "flash" in st.session_state:
     kind, msg = st.session_state.pop("flash")
     (st.success if kind == "success" else st.error)(msg)
+
+if page == "Discover":
+    discover_page()
+    st.stop()
 
 pid = st.session_state.get("pid")
 if not pid:

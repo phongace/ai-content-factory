@@ -90,6 +90,7 @@ class ProjectStore:
             language=inp.language,
             visual_style=inp.visual_style,
             voice_preset=voice_preset,
+            brief=inp.brief,
         )
         self._write_project(project)
         self.log(pid, f"created topic={inp.topic!r}")

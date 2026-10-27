@@ -146,6 +146,79 @@ def cmd_demo(a, f: Factory) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- discovery
+def _discovery(f: Factory):
+    from .discovery.service import Discovery
+
+    return Discovery(f)
+
+
+def _candidate_row(c) -> dict:
+    return {
+        "id": c.id,
+        "source": c.source,
+        "title": c.label,
+        "author": c.author,
+        "url": c.url,
+        "views": c.metrics.get("views"),
+        "views_per_day": c.score.raw.get("views_per_day") if c.score else None,
+        "viral_score": c.score.viral_score if c.score else None,
+        "signals": c.score.signals if c.score else None,
+        "enrich_error": c.enrich_error,
+    }
+
+
+def cmd_discover_url(a, f: Factory) -> int:
+    c = _discovery(f).add_url(a.url, a.title, _text(a.transcript, a.transcript_file), a.notes, a.niche)
+    _print(_candidate_row(c))
+    return 0
+
+
+def _text(value: str | None, file: Path | None) -> str | None:
+    return file.read_text(encoding="utf-8") if file else value
+
+
+def cmd_discover_text(a, f: Factory) -> int:
+    c = _discovery(f).add_content(a.topic, a.title, _text(a.transcript, a.transcript_file), a.notes, a.url, a.niche)
+    _print(_candidate_row(c))
+    return 0
+
+
+def cmd_discover_youtube(a, f: Factory) -> int:
+    found, cached = _discovery(f).search_youtube(a.niche, a.keywords, a.days, a.max, a.language)
+    print(f"{len(found)} candidates ({'cache' if cached else 'YouTube API'}), top {a.top}:", file=sys.stderr)
+    _print([_candidate_row(c) for c in found[: a.top]])
+    return 0
+
+
+def cmd_candidates(a, f: Factory) -> int:
+    _print([_candidate_row(c) for c in _discovery(f).candidates()[: a.top]])
+    return 0
+
+
+def _opportunity_view(o) -> dict:
+    return {
+        **o.model_dump(exclude={"hooks"}),
+        "hooks": [{"index": i, "overall": h.overall, **h.model_dump()} for i, h in enumerate(o.hooks)],
+    }
+
+
+def cmd_analyze(a, f: Factory) -> int:
+    _print(_opportunity_view(_discovery(f).analyze(a.candidate, a.language, a.niche)))
+    return 0
+
+
+def cmd_opportunity(a, f: Factory) -> int:
+    _print(_opportunity_view(_discovery(f).store.get_opportunity(a.opportunity)))
+    return 0
+
+
+def cmd_generate(a, f: Factory) -> int:
+    p = _discovery(f).generate_video(a.opportunity, a.duration, a.style, hook_index=a.hook, format_id=a.format)
+    print(p.id)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="factory", description="AI Content Factory POC")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -187,6 +260,37 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--language", choices=["vi", "en"], default="vi")
     d.add_argument("--provider", choices=["mock", "edge", "voicestudio"], default="mock")
     d.add_argument("--music", action="store_true")
+    du = sub.add_parser("discover-url", help="save a reference URL (YouTube metadata fetched when YOUTUBE_API_KEY set)")
+    du.add_argument("url")
+    dt = sub.add_parser("discover-text", help="save a reference you describe yourself (topic/title/transcript)")
+    dt.add_argument("--topic")
+    dt.add_argument("--url")
+    for cmd in (du, dt):
+        cmd.add_argument("--title")
+        cmd.add_argument("--transcript")
+        cmd.add_argument("--transcript-file", type=Path)
+        cmd.add_argument("--notes")
+        cmd.add_argument("--niche")
+    dy = sub.add_parser("discover-youtube", help="search recent YouTube videos and rank them (needs YOUTUBE_API_KEY)")
+    dy.add_argument("niche")
+    dy.add_argument("--keywords", default="")
+    dy.add_argument("--days", type=int, default=30, help="lookback window (default 30)")
+    dy.add_argument("--max", type=int, default=20, help="results to fetch, max 50 (default 20)")
+    dy.add_argument("--language", choices=["vi", "en"])
+    dy.add_argument("--top", type=int, default=10)
+    cl = sub.add_parser("candidates", help="saved references, ranked by viral score")
+    cl.add_argument("--top", type=int, default=20)
+    an = sub.add_parser("analyze", help="candidate -> opportunity (angle, 5 scored hooks, format)")
+    an.add_argument("candidate")
+    an.add_argument("--language", choices=["vi", "en"], default="vi")
+    an.add_argument("--niche")
+    sub.add_parser("opportunity", help="show an opportunity").add_argument("opportunity")
+    g = sub.add_parser("generate", help="opportunity -> project with a planned storyboard (existing pipeline)")
+    g.add_argument("opportunity")
+    g.add_argument("--hook", type=int, help="hook index to use (default: best scored)")
+    g.add_argument("--format", help="override the format id")
+    g.add_argument("--duration", type=int, help="target seconds 20-45 (default: middle of the format's range)")
+    g.add_argument("--style", default="cinematic, realistic, soft natural light")
     a = ap.parse_args(argv)
     handler = globals()[f"cmd_{a.cmd.replace('-', '_')}"]
     try:

@@ -13,16 +13,25 @@ import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Generic, Protocol, TypeVar
 
 import requests
 from pydantic import ValidationError
 
 from .config import Settings, get_settings
-from .schema import MAX_SCENE_TARGET, MAX_SCENES, MIN_SCENE_TARGET, MIN_SCENES, PlannerInput, Storyboard
+from .schema import (
+    MAX_SCENE_TARGET,
+    MAX_SCENES,
+    MIN_SCENE_TARGET,
+    MIN_SCENES,
+    ContentBrief,
+    PlannerInput,
+    Storyboard,
+)
 
 # Speaking rate used to size narration (words per second). Vietnamese counts syllables.
 WORDS_PER_SECOND = {"vi": 3.6, "en": 2.5}
+T = TypeVar("T")
 
 
 class PlannerError(Exception):
@@ -48,6 +57,15 @@ class PlanResult:
     attempts: int = 1
 
 
+@dataclass
+class ToolRun(Generic[T]):
+    value: T
+    cost_usd: float
+    input_tokens: int
+    output_tokens: int
+    attempts: int
+
+
 class ContentPlanner(Protocol):
     name: str
 
@@ -63,6 +81,26 @@ def scene_plan(target: int) -> list[float]:
         n -= 1
     base = max(MIN_SCENE_TARGET, min(MAX_SCENE_TARGET, target / n))
     return [round(base, 1)] * n
+
+
+def brief_prompt(brief: ContentBrief | None) -> str:
+    """Planner instructions for a discovery brief. The reference itself (transcript, wording) never reaches the
+    planner: only the extracted angle, our own hook and the format beats do."""
+    if brief is None:
+        return ""
+    beats = " -> ".join(brief.story_beats) or "hook -> body -> payoff"
+    lines = [
+        "Content brief (follow it):",
+        f"- Angle: {brief.angle}",
+        f"- Opening hook: {brief.hook}",
+        "  Scene 1 narration must deliver this hook; tighten the wording only if it does not fit the scene.",
+        f"- Format: {brief.format_id}, pacing {brief.pacing}. Story beats in order: {beats}.",
+        "  Map the beats onto the scenes in order (a beat may span two scenes, two short beats may share one).",
+        "- The last scene delivers the payoff the hook promised.",
+        "- Originality: this brief came from analysing a reference video you have not seen. Write a fully original",
+        "  script in your own words; do not imitate any existing video's script, phrasing or footage.",
+    ]
+    return "\n".join(lines) + "\n\n"
 
 
 def validate(raw: dict, inp: PlannerInput) -> Storyboard:
@@ -120,11 +158,15 @@ class MockPlanner:
             }
             for i, t in enumerate(targets)
         ]
+        hook = m["hook"]
+        if inp.brief:
+            hook = inp.brief.hook
+            scenes[0]["narration"] = inp.brief.hook
         raw = {
             "title": inp.topic[:90],
             "description": m["desc"].format(topic=inp.topic),
             "hashtags": m["tags"],
-            "hook": m["hook"],
+            "hook": hook,
             "scenes": scenes,
         }
         return PlanResult(storyboard=validate(raw, inp), provider=self.name)
@@ -201,9 +243,14 @@ def backoff_seconds(retry: int, retry_after: str | None) -> float:
     return min(max(wait, 0.0), BACKOFF_MAX_S)
 
 
-class ClaudePlanner:
-    name = "claude"
+class ClaudeToolClient:
+    """Anthropic Messages API with one strict tool: HTTP retry/backoff, validate-and-retry on bad tool input, cost.
+
+    Shared by the planner and the discovery opportunity analyzer.
+    """
+
     url = "https://api.anthropic.com/v1/messages"
+    label = "claude"
 
     def __init__(
         self,
@@ -219,7 +266,7 @@ class ClaudePlanner:
         self.http = session or requests.Session()
         self.sleep = sleep
 
-    def _call(self, system: str, messages: list[dict]) -> dict:
+    def _call(self, system: str, messages: list[dict], tool: dict) -> dict:
         headers = {
             "x-api-key": self.s.anthropic_api_key,
             "anthropic-version": "2023-06-01",
@@ -229,7 +276,7 @@ class ClaudePlanner:
             "model": self.s.anthropic_model,
             "max_tokens": MAX_TOKENS,
             "system": system,
-            "tools": [STORYBOARD_TOOL],
+            "tools": [tool],
             "tool_choice": {"type": "auto"},
             "messages": messages,
         }
@@ -262,6 +309,77 @@ class ClaudePlanner:
             message, input_tokens=in_tok, output_tokens=out_tok, cost_usd=self._cost(in_tok, out_tok), attempts=attempts
         )
 
+    def run_tool(self, system: str, user: str, tool: dict, parse: Callable[[dict], T]) -> ToolRun[T]:
+        """Ask for exactly one `tool` call and `parse` its input; a parse error is fed back and retried."""
+        name = tool["name"]
+        messages: list[dict] = [{"role": "user", "content": user}]
+        in_tok = out_tok = 0
+        last_error = ""
+        stop = None
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                data = self._call(system, messages, tool)
+            except PlannerError as e:
+                raise self._failed(str(e), in_tok, out_tok, attempt - 1) from e
+            usage = data.get("usage", {})
+            in_tok += int(usage.get("input_tokens", 0))
+            out_tok += int(usage.get("output_tokens", 0))
+            stop = data.get("stop_reason")
+            content = data.get("content", [])
+            block = next((b for b in content if b.get("type") == "tool_use" and b.get("name") == name), None)
+            if stop in ("max_tokens", "refusal") or block is None:
+                # No usable tool call (a cut-off block is not trustworthy either): nudge with a plain user turn.
+                if stop == "refusal":
+                    last_error = f"model refused the request (stop_details={data.get('stop_details')})"
+                elif stop == "max_tokens":
+                    last_error = f"output cut off at max_tokens={MAX_TOKENS} before {name} was completed"
+                else:
+                    last_error = f"model did not call {name}"
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"Your previous reply did not call {name} ({last_error}). "
+                        f"Answer ONLY by calling {name}.",
+                    }
+                )
+                continue
+            try:
+                value = parse(block.get("input") or {})
+            except (ValidationError, ValueError) as e:
+                last_error = str(e)[:1500]
+                feedback = f"Invalid input, fix it and call {name} again:\n{last_error}"
+                # Echo the reply unchanged (thinking blocks included: the API rejects edited ones) and answer
+                # every tool_use in it, not just the one we validated.
+                messages += [
+                    {"role": "assistant", "content": content},
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": b["id"],
+                                "is_error": True,
+                                "content": feedback if b is block else f"Ignored: call {name} once.",
+                            }
+                            for b in content
+                            if b.get("type") == "tool_use"
+                        ],
+                    },
+                ]
+                continue
+            return ToolRun(value, self._cost(in_tok, out_tok), in_tok, out_tok, attempt)
+        raise self._failed(
+            f"{self.label} output invalid after {self.max_attempts} attempts (last stop_reason={stop}): {last_error}",
+            in_tok,
+            out_tok,
+            self.max_attempts,
+        )
+
+
+class ClaudePlanner(ClaudeToolClient):
+    name = "claude"
+    label = "planner"
+
     def generate(self, inp: PlannerInput) -> PlanResult:
         targets = scene_plan(inp.target_duration)
         system = SYSTEM_PROMPT.format(
@@ -275,72 +393,11 @@ class ClaudePlanner:
         user = (
             f"Topic: {inp.topic}\nLanguage: {lang}\nTotal duration: {inp.target_duration}s "
             f"(suggested {len(targets)} scenes of ~{targets[0]}s)\nVisual style: {inp.visual_style}\n\n"
+            f"{brief_prompt(inp.brief)}"
             "Answer by calling the submit_storyboard tool with the finished storyboard."
         )
-        messages: list[dict] = [{"role": "user", "content": user}]
-        in_tok = out_tok = 0
-        last_error = ""
-        stop = None
-        for attempt in range(1, self.max_attempts + 1):
-            try:
-                data = self._call(system, messages)
-            except PlannerError as e:
-                raise self._failed(str(e), in_tok, out_tok, attempt - 1) from e
-            usage = data.get("usage", {})
-            in_tok += int(usage.get("input_tokens", 0))
-            out_tok += int(usage.get("output_tokens", 0))
-            stop = data.get("stop_reason")
-            content = data.get("content", [])
-            block = next(
-                (b for b in content if b.get("type") == "tool_use" and b.get("name") == STORYBOARD_TOOL["name"]), None
-            )
-            if stop in ("max_tokens", "refusal") or block is None:
-                # No usable tool call (a cut-off block is not trustworthy either): nudge with a plain user turn.
-                if stop == "refusal":
-                    last_error = f"model refused the request (stop_details={data.get('stop_details')})"
-                elif stop == "max_tokens":
-                    last_error = f"output cut off at max_tokens={MAX_TOKENS} before submit_storyboard was completed"
-                else:
-                    last_error = "model did not call submit_storyboard"
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": f"Your previous reply did not submit a storyboard ({last_error}). "
-                        "Answer ONLY by calling submit_storyboard.",
-                    }
-                )
-                continue
-            try:
-                sb = validate(block.get("input") or {}, inp)
-            except (ValidationError, ValueError) as e:
-                last_error = str(e)[:1500]
-                feedback = f"Invalid storyboard, fix and call submit_storyboard again:\n{last_error}"
-                # Echo the reply unchanged (thinking blocks included: the API rejects edited ones) and answer
-                # every tool_use in it, not just the one we validated.
-                messages += [
-                    {"role": "assistant", "content": content},
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": b["id"],
-                                "is_error": True,
-                                "content": feedback if b is block else "Ignored: call submit_storyboard once.",
-                            }
-                            for b in content
-                            if b.get("type") == "tool_use"
-                        ],
-                    },
-                ]
-                continue
-            return PlanResult(sb, self.name, self._cost(in_tok, out_tok), in_tok, out_tok, attempt)
-        raise self._failed(
-            f"planner output invalid after {self.max_attempts} attempts (last stop_reason={stop}): {last_error}",
-            in_tok,
-            out_tok,
-            self.max_attempts,
-        )
+        run = self.run_tool(system, user, STORYBOARD_TOOL, lambda raw: validate(raw, inp))
+        return PlanResult(run.value, self.name, run.cost_usd, run.input_tokens, run.output_tokens, run.attempts)
 
 
 def get_planner(settings: Settings | None = None) -> ContentPlanner:
