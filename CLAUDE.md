@@ -35,7 +35,9 @@ Reference (manual URL / manual content / YouTube search) → rule-based viral sc
 - Provider abstractions stay thin: `ContentPlanner`, `VoiceProvider`, `Publisher`. Mock implementations must keep working without any credentials.
 - Voice is generated PER SCENE. `actual_audio_duration` (ffprobe) is the source of truth for timing.
 - Planner: 4–6 scenes, each target 5–9s, never above 9s (TC-02). Total 20–45s.
-- Muse is MANUAL in the POC (copy prompt → generate → upload clip). No Muse API.
+- Muse is MANUAL in the POC (copy prompt → generate → upload clip). No Muse API, no browser automation of Muse.
+  `factory/handoff.py` only cuts the hand-off: one prompt sheet per project, bulk import of downloaded files.
+- Every scene's video_prompt starts with the storyboard's `visual_bible` (same character/world in every clip).
 - YouTube uploads default to `private`, `unlisted` allowed, `public` refused in code.
 - Secrets never committed. `.env.local` is gitignored, `.env.example` holds placeholders only. `data/` is gitignored (contains the YouTube token).
 - Do not use MPT's bundled songs or proprietary fonts (see THIRD_PARTY_NOTICES.md).

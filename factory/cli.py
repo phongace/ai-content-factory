@@ -32,7 +32,7 @@ def cmd_preflight(_a, _f: Factory) -> int:
 
 
 def cmd_new(a, f: Factory) -> int:
-    p = f.create_project(a.topic, a.duration, a.language, a.style)
+    p = f.create_project(a.topic, a.duration, a.language, a.style, visual_bible=a.bible or "")
     print(p.id)
     return 0
 
@@ -64,6 +64,25 @@ def cmd_clip(a, f: Factory) -> int:
     s = f.storyboard(a.project).scene(a.scene)
     print(f"scene {a.scene}: {s.asset_type} asset attached (source: {s.asset_source})")
     return 0
+
+
+def cmd_bible(a, f: Factory) -> int:
+    f.edit_visual_bible(a.project, a.text)
+    print(f.storyboard(a.project).visual_bible or "(visual bible cleared)")
+    return 0
+
+
+def cmd_muse_prompts(a, f: Factory) -> int:
+    out = f.muse_sheet(a.project)
+    print(out.read_text(encoding="utf-8"))
+    print(f"saved: {out}", file=sys.stderr)
+    return 0
+
+
+def cmd_import_assets(a, f: Factory) -> int:
+    report = f.import_assets(a.project, a.paths, by_time=a.by_time, source=a.source, dry_run=a.dry_run)
+    _print(report)
+    return 1 if any(r["result"].startswith("error") for r in report) else 0
 
 
 def cmd_render(a, f: Factory) -> int:
@@ -228,6 +247,7 @@ def main(argv: list[str] | None = None) -> int:
     n.add_argument("--duration", type=int, default=30)
     n.add_argument("--language", choices=["vi", "en"], default="vi")
     n.add_argument("--style", default="cinematic, realistic, soft natural light")
+    n.add_argument("--bible", help="fixed look of the recurring character/world, prepended to every Muse prompt")
     sub.add_parser("list")
     for name in ("plan", "status"):
         sub.add_parser(name).add_argument("project")
@@ -241,6 +261,18 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("scene", type=int)
     c.add_argument("file", type=Path)
     c.add_argument("--source", choices=ASSET_SOURCES, help="default: muse for a video, upload for an image")
+    b = sub.add_parser("bible", help="set (or clear with '') the visual bible prefix of every scene's Muse prompt")
+    b.add_argument("project")
+    b.add_argument("text")
+    sub.add_parser("muse-prompts", help="all scene prompts in one sheet (also saved as muse_prompts.md)").add_argument(
+        "project"
+    )
+    ia = sub.add_parser("import-assets", help="attach many downloaded clips/images at once (scene number in name)")
+    ia.add_argument("project")
+    ia.add_argument("paths", nargs="+", type=Path, help="files and/or folders (folders: direct children only)")
+    ia.add_argument("--by-time", action="store_true", help="newest files, oldest first, onto scenes missing an asset")
+    ia.add_argument("--source", choices=ASSET_SOURCES, help="default: muse for a video, upload for an image")
+    ia.add_argument("--dry-run", action="store_true", help="show the mapping without attaching")
     r = sub.add_parser("render", help="render the Short; background music is kept from the previous render")
     r.add_argument("project")
     music = r.add_mutually_exclusive_group()

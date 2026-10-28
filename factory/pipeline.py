@@ -8,9 +8,9 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import media
+from . import handoff, media
 from .config import Settings, get_settings
-from .planner import ContentPlanner, PlannerError, get_planner
+from .planner import ContentPlanner, PlannerError, apply_bible, get_planner
 from .publish.base import Publisher, PublishRequest, clean_description, clean_title, strip_angle_brackets
 from .render import render as render_video
 from .schema import (
@@ -80,12 +80,14 @@ class Factory:
         visual_style: str = "cinematic, realistic, soft natural light",
         voice_preset: str = "default",
         brief: ContentBrief | None = None,
+        visual_bible: str = "",
     ) -> Project:
         inp = PlannerInput(
             topic=topic,
             target_duration=target_duration,
             language=language,  # type: ignore[arg-type]
             visual_style=visual_style,
+            visual_bible=visual_bible.strip(),
             brief=brief,
         )
         return self.store.create(inp, voice_preset)
@@ -98,6 +100,7 @@ class Factory:
             target_duration=p.target_duration,
             language=p.language,
             visual_style=p.visual_style,
+            visual_bible=p.visual_bible,
             brief=p.brief,
         )
         with self.stage(pid, "planning"):
@@ -163,6 +166,61 @@ class Factory:
             sb.hashtags = ["#" + h.strip().lstrip("#") for h in hashtags if h.strip().lstrip("#")]
 
         self.store.update_storyboard(pid, fn)
+
+    def edit_visual_bible(self, pid: str, bible: str) -> None:
+        """Swap the shared prefix of every scene's Muse prompt. Prompts are not render inputs: nothing goes stale."""
+        bible = bible.strip()
+
+        def fn(sb: StoryboardFile) -> None:
+            for s in sb.scenes:
+                s.video_prompt = apply_bible(s.video_prompt, bible, old=sb.visual_bible)
+            sb.visual_bible = bible
+
+        self.store.update_storyboard(pid, fn)
+
+        def proj(p: Project) -> None:
+            p.visual_bible = bible
+
+        self.store.update(pid, proj)
+        self.store.log(pid, f"visual bible {'set' if bible else 'cleared'} ({len(bible.split())} words)")
+
+    def muse_sheet(self, pid: str) -> Path:
+        """All scene prompts in one file (data/projects/<id>/muse_prompts.md) for one copy into Muse."""
+        p = self.store.get(pid)
+        out = self.store.path(pid, "muse_prompts.md")
+        out.write_text(handoff.muse_sheet(pid, p.title, self.storyboard(pid)), encoding="utf-8")
+        return out
+
+    def import_assets(
+        self,
+        pid: str,
+        paths: list[str | Path],
+        by_time: bool = False,
+        source: str | None = None,
+        dry_run: bool = False,
+    ) -> list[dict]:
+        """Attach many downloaded assets at once. Default: the scene number in each file name (scene_01.mp4,
+        canh-2.jpg, 03.mp4). `by_time`: the newest files, oldest first, onto the scenes still missing an asset.
+        Each file goes through attach_asset, so validation, no-op on identical files and costs stay the same."""
+        sb = self.storyboard(pid)
+        files = handoff.asset_files([Path(x).expanduser() for x in paths])
+        if not files:
+            raise ValueError("no video or image files found (" + supported_asset_types() + ")")
+        if by_time:
+            missing = [s.order for s in sb.scenes if not s.asset_path]
+            plan, rest = handoff.match_by_time(files, missing), []
+        else:
+            plan, rest = handoff.match_by_name(files, [s.order for s in sb.scenes])
+        report = [{"scene": None, "file": str(f), "result": "skipped: no scene number in the name"} for f in rest]
+        for order in sorted(plan):
+            row = {"scene": order, "file": str(plan[order]), "result": "would attach" if dry_run else "attached"}
+            if not dry_run:
+                try:
+                    self.attach_asset(pid, order, plan[order], source)
+                except Exception as e:  # one bad file must not stop the others
+                    row["result"] = f"error: {e}"
+            report.append(row)
+        return report
 
     def set_muse_cost(self, pid: str, usd: float) -> None:
         def fn(p: Project) -> None:

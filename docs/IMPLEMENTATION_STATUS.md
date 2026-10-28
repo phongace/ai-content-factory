@@ -103,6 +103,18 @@ Branch `feature/discovery-engine-v0`. Module mới `factory/discovery/` (models,
 
 Cần người làm: tạo `YOUTUBE_API_KEY` (MANUAL_SETUP §4b), điền `ANTHROPIC_API_KEY` để đánh giá chất lượng opportunity thật.
 
+## Muse hand-off + visual bible (2026-10-28)
+
+Muse vẫn làm tay (không API, không browser automation). Module mới `factory/handoff.py`.
+
+| Mục | Status | Ghi chú |
+|---|---|---|
+| Prompt sheet | DONE | `factory muse-prompts <id>` / khung Muse ở tab Storyboard: mọi prompt một lần, kèm tên file nên lưu, đánh dấu scene đã có asset; lưu `muse_prompts.md` |
+| Import nhiều asset | DONE | `factory import-assets <id> <folder/files> [--by-time] [--dry-run]` / "Gắn tất cả" trên UI. Ghép theo số scene trong tên file hoặc theo thời gian tải/thứ tự upload vào scene còn trống; từng file qua `attach_asset` (validate, no-op khi trùng, phí Muse như cũ); một file lỗi không chặn file khác |
+| Visual bible | DONE (mock) / PARTIAL (Claude) | `Storyboard.visual_bible` + `Project.visual_bible`; planner viết hoặc dùng bible của user, code bảo đảm mọi prompt bắt đầu bằng bible; `factory bible` / "Lưu bible" đổi phần đầu mọi prompt. Chất lượng bible do Claude viết chưa kiểm vì key Anthropic hết hạn mức tới 2026-11-01 |
+
+Kiểm chứng: CLI end-to-end trên data tạm (sheet, dry-run, import theo tên, `--by-time`, đổi bible); UI qua trình duyệt headless (bật khung, upload 2 file, "Gắn tất cả", khung vẫn mở). Không thêm test tự động (không được yêu cầu).
+
 ## Đã biết / chưa xác minh
 
 - Edge TTS (giọng Việt miễn phí, chỉ để dev) **chưa test được** trong sandbox vì proxy SSL. Trên máy thật thường chạy, nếu lỗi thì dùng mock hoặc upload audio.

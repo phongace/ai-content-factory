@@ -90,6 +90,7 @@ class ProjectStore:
             language=inp.language,
             visual_style=inp.visual_style,
             voice_preset=voice_preset,
+            visual_bible=inp.visual_bible,
             brief=inp.brief,
         )
         self._write_project(project)

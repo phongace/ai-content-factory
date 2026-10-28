@@ -61,6 +61,8 @@ Ba nguồn:
 4. **Visual Asset** (mỗi scene dùng video hoặc ảnh, trộn tuỳ ý, ví dụ Short 4 scene: video / ảnh / video / ảnh để giảm chi phí Muse). Ở khung "Visual Asset" của scene chọn "Video" hoặc "Image", upload, chọn Source rồi bấm "Attach Asset" (đã có asset thì nút là "Replace Asset", kèm "Remove Asset"). Sau khi gắn, scene hiện Type, Source, tên file, kích thước và preview.
    - **Cách A, video từ Muse**: bấm nút copy ở "Copy Muse Prompt" → dán vào Muse → generate → tải mp4 → "Upload Video" vào đúng scene (Source `muse`). Clip ngang/dọc/vuông đều được, app tự crop 9:16, clip ngắn hơn voice thì loop, dài hơn thì cắt.
    - **Cách B, ảnh**: chuẩn bị hoặc tạo ảnh ở ngoài → "Upload Image" (`.jpg`, `.jpeg`, `.png`, `.webp`, Source `upload` hoặc `generated`). Không có AI image provider trong app, không có Muse API.
+   - **Làm nhiều scene một lượt (khuyên dùng)**: bật "Muse: tất cả prompt + import nhiều file" ở tab Storyboard. Copy cả bộ prompt một lần (hoặc tải `muse_prompts.md`), generate lần lượt trong Muse, rồi chọn nhiều file một lúc và bấm "Gắn tất cả". Ghép theo số scene trong tên file (`scene_01.mp4`, `Scene 2.png`, `canh-3.jpg`, `04.mp4`; file không có số bị bỏ qua và được báo lại) hoặc theo thứ tự trong danh sách upload vào các scene còn trống. Mỗi file vẫn đi qua đúng bước kiểm tra như upload từng scene.
+   - **Visual bible (nhân vật/bối cảnh giống nhau giữa các clip)**: một đoạn tiếng Anh 20-50 từ mô tả nhân vật/bối cảnh/màu/ánh sáng cố định, nằm ở đầu MỌI prompt. Planner tự viết nếu bạn để trống; muốn tự đặt thì điền ô "Nhân vật / bối cảnh cố định" khi tạo project, hoặc sửa sau trong khung Muse ("Lưu bible" thay phần đầu của mọi prompt, không làm render stale). Nếu Muse cho thêm ảnh tham chiếu thì dùng cùng một ảnh nhân vật cho mọi scene.
    - Cả hai cách đi vào cùng một renderer. Ảnh được chuẩn hoá lúc Render thành clip 1080x1920: cover-scale + crop giữa (không méo), zoom chậm 10%, dài đúng bằng voice của scene (làm tròn lên theo frame 30fps, render cắt đúng theo voice). Clip này cache trong `scenes/normalized/` theo (nội dung ảnh, số frame, version), nên ảnh không đổi thì scene được reuse khi render lại.
    - Chi phí Muse chỉ tính cho asset có Source `muse` (video upload mặc định là `muse`, ảnh mặc định là `upload`). Gắn lại đúng file đang dùng cho scene (cùng sha256) là no-op: không cộng phí, không làm render stale. Upload sai (đuôi lạ, source lạ, file hỏng) báo lỗi ngay và không đổi status của project.
 5. **Render** (tab Render & QC): upload nhạc nền nếu muốn, chỉnh volume, bấm Render. Ra `data/projects/<id>/renders/final-short.mp4` 1080x1920, H.264/AAC, 30fps, -14 LUFS, phụ đề đã burn.
@@ -81,6 +83,11 @@ uv run factory voice <project_id> --scene 2 --file voice2.mp3      # upload tay
 uv run factory clip <project_id> 1 ~/Downloads/muse_scene1.mp4     # video (Source mặc định: muse)
 uv run factory clip <project_id> 2 ~/Downloads/scene2.jpg            # ảnh (Source mặc định: upload)
 uv run factory clip <project_id> 2 scene2.webp --source generated    # muse | upload | generated | mock
+uv run factory new "Đi bộ mỗi tối" --bible "An old man with white beard, navy cardigan, quiet park at dusk"
+uv run factory bible <project_id> "new fixed look..."     # đổi bible: thay phần đầu mọi prompt
+uv run factory muse-prompts <project_id>                    # in + lưu data/projects/<id>/muse_prompts.md
+uv run factory import-assets <project_id> ~/Downloads [--dry-run]   # theo số scene trong tên file
+uv run factory import-assets <project_id> ~/Downloads --by-time     # N file mới nhất → các scene còn trống, theo thứ tự tải
 uv run factory render <project_id> [--bgm music.mp3] [--bgm-volume 0.3]   # không có --bgm: dùng lại nhạc đã lưu
 uv run factory render <project_id> --no-bgm                              # bỏ nhạc nền của project
 uv run factory youtube-connect       # OAuth một lần: mở trình duyệt, chờ tối đa 300s, kiểm tra scope, lưu token

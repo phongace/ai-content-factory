@@ -7,12 +7,14 @@ Deliberately plain: internal tool, one user, no timeline editor.
 
 from __future__ import annotations
 
+import os
 import tempfile
+import time
 from pathlib import Path
 
 import streamlit as st
 
-from factory import media
+from factory import handoff, media
 from factory.config import Settings, get_settings
 from factory.discovery.formats import FORMATS
 from factory.discovery.models import ContentOpportunity, DiscoveryCandidate
@@ -111,6 +113,32 @@ def act_attach(pid: str, order: int, upload_key: str, source_key: str, slot: str
         return
     if run(f"Gắn asset scene {order}", F.attach_asset, pid, order, save_upload(upload), st.session_state[source_key]):
         bump(slot)
+
+
+def act_save_bible(pid: str) -> None:
+    run("Lưu visual bible", F.edit_visual_bible, pid, st.session_state[f"vb{pid}"])
+
+
+def act_bulk_import(pid: str, upload_key: str, slot: str) -> None:
+    ss = st.session_state
+    uploads = ss.get(upload_key) or []
+    if not uploads:
+        return
+    folder = Path(tempfile.mkdtemp())
+    base = time.time()
+    for i, upload in enumerate(uploads):
+        dst = folder / Path(upload.name).name
+        dst.write_bytes(upload.getbuffer())
+        os.utime(dst, (base + i, base + i))
+    by_time = ss[f"bulkmode{pid}"] == "Thứ tự trong danh sách upload → scene còn trống"
+    report = run("Import assets", F.import_assets, pid, [folder], by_time)
+    if not isinstance(report, list):
+        return
+    done = [f"scene {r['scene']}" for r in report if r["result"] == "attached"]
+    other = [f"{Path(r['file']).name}: {r['result']}" for r in report if r["result"] != "attached"]
+    kind = "error" if any(r["result"].startswith("error") for r in report) else "success"
+    ss["flash"] = (kind, "Đã gắn: " + (", ".join(done) or "không có") + ("  \n" + "  \n".join(other) if other else ""))
+    bump(slot)
 
 
 def act_import_voice(pid: str, order: int, upload_key: str) -> None:
@@ -399,8 +427,12 @@ with st.sidebar:
         duration = st.slider("Thời lượng mục tiêu (s)", 20, 45, 30)
         language = st.radio("Ngôn ngữ", ["vi", "en"], horizontal=True)
         style = st.text_input("Visual style", "cinematic, realistic, soft natural light")
+        bible = st.text_area(
+            "Nhân vật / bối cảnh cố định (tuỳ chọn, tiếng Anh)",
+            placeholder="vd: a woman in her 20s, shoulder-length black hair, beige trench coat, rainy Hanoi street",
+        )
         if st.form_submit_button("Tạo project", type="primary") and topic.strip():
-            p = run("Tạo project", F.create_project, topic.strip(), duration, language, style)
+            p = run("Tạo project", F.create_project, topic.strip(), duration, language, style, visual_bible=bible)
             if isinstance(p, Project):
                 st.session_state["pid"] = p.id
     projects = F.store.list()
@@ -479,6 +511,36 @@ with tab_sb:
             st.text_input("Hashtags", " ".join(sb.hashtags), key=f"mh{pid}")
             st.caption(f"Hook: {sb.hook}")
             st.button("Lưu metadata", on_click=act_save_metadata, args=(pid,))
+
+        if st.toggle("Muse: tất cả prompt + import nhiều file", key=f"muse{pid}"):
+            st.text_area(
+                "Visual bible (đặt ở đầu mọi prompt để nhân vật/bối cảnh giống nhau giữa các clip)",
+                sb.visual_bible,
+                key=f"vb{pid}",
+                height=80,
+            )
+            st.button("Lưu bible (áp vào mọi prompt)", key=f"vbs{pid}", on_click=act_save_bible, args=(pid,))
+            sheet = handoff.muse_sheet(pid, p.title, sb)
+            st.caption("Copy một lần cả bộ prompt (nút copy ở góc phải) hoặc tải file:")
+            st.code(sheet, language=None, wrap_lines=True)
+            st.download_button("Tải muse_prompts.md", sheet, file_name=f"{pid}-muse.md")
+            bulk_slot = f"bulk{pid}"
+            bulk_key = f"{bulk_slot}{nonce(bulk_slot)}"
+            st.file_uploader(
+                "Chọn nhiều video/ảnh đã tải từ Muse",
+                key=bulk_key,
+                type=exts("Video") + exts("Image"),
+                accept_multiple_files=True,
+            )
+            st.radio(
+                "Ghép file vào scene theo",
+                [
+                    "Số scene trong tên file (scene_01.mp4, canh-2.jpg, 03.mp4)",
+                    "Thứ tự trong danh sách upload → scene còn trống",
+                ],
+                key=f"bulkmode{pid}",
+            )
+            st.button("Gắn tất cả", key=f"bulkgo{pid}", on_click=act_bulk_import, args=(pid, bulk_key, bulk_slot))
 
         total_audio = sum(s.actual_audio_duration or 0 for s in sb.scenes)
         st.caption(

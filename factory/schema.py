@@ -67,6 +67,7 @@ class PlannerInput(BaseModel):
     target_duration: int = Field(default=30, ge=MIN_TOTAL, le=MAX_TOTAL)
     language: Language = "vi"
     visual_style: str = Field(default="cinematic, realistic, soft natural light", max_length=200)
+    visual_bible: str = Field(default="", max_length=600)  # user-fixed look of the recurring subject (optional)
     brief: ContentBrief | None = None
 
 
@@ -90,6 +91,7 @@ class Storyboard(BaseModel):
     description: str = Field(min_length=1, max_length=4500)
     hashtags: list[str] = Field(min_length=1, max_length=15)
     hook: str = Field(min_length=1)
+    visual_bible: str = ""  # prefix shared by every video_prompt (character/world consistency across clips)
     scenes: list[PlannedScene] = Field(min_length=MIN_SCENES, max_length=MAX_SCENES)
 
     @field_validator("hashtags")
@@ -173,6 +175,7 @@ class StoryboardFile(BaseModel):
     description: str
     hashtags: list[str]
     hook: str
+    visual_bible: str = ""
     scenes: list[SceneState]
 
     @classmethod
@@ -182,6 +185,7 @@ class StoryboardFile(BaseModel):
             description=sb.description,
             hashtags=sb.hashtags,
             hook=sb.hook,
+            visual_bible=sb.visual_bible,
             scenes=[
                 SceneState(
                     order=s.order,
@@ -241,6 +245,7 @@ class Project(BaseModel):
     language: Language
     visual_style: str
     voice_preset: str = "default"
+    visual_bible: str = ""  # user-given; empty = the planner writes one
     brief: ContentBrief | None = None  # set when the project was generated from a discovery opportunity
     status: Status = "draft"
     current_stage: Stage = "created"

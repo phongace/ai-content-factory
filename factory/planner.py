@@ -103,9 +103,23 @@ def brief_prompt(brief: ContentBrief | None) -> str:
     return "\n".join(lines) + "\n\n"
 
 
+def apply_bible(prompt: str, bible: str, old: str = "") -> str:
+    """Every Muse prompt starts with the same visual bible, so the recurring subject looks the same in every clip."""
+    prompt = prompt.strip()
+    if old and prompt.startswith(old):
+        prompt = prompt[len(old) :].strip()
+    if not bible or prompt.startswith(bible):
+        return prompt
+    return f"{bible} {prompt}"
+
+
 def validate(raw: dict, inp: PlannerInput) -> Storyboard:
     sb = Storyboard.model_validate(raw)
     sb.check_total(inp.target_duration)
+    if inp.visual_bible:  # the user's bible wins over the model's
+        sb.visual_bible = inp.visual_bible
+    for scene in sb.scenes:
+        scene.video_prompt = apply_bible(scene.video_prompt, sb.visual_bible)
     return sb
 
 
@@ -158,6 +172,10 @@ class MockPlanner:
             }
             for i, t in enumerate(targets)
         ]
+        bible = inp.visual_bible or (
+            f"Recurring subject: the same young adult in a plain grey hoodie, short dark hair, {inp.visual_style}, "
+            "warm neutral palette, 35mm lens look."
+        )
         hook = m["hook"]
         if inp.brief:
             hook = inp.brief.hook
@@ -167,6 +185,7 @@ class MockPlanner:
             "description": m["desc"].format(topic=inp.topic),
             "hashtags": m["tags"],
             "hook": hook,
+            "visual_bible": bible,
             "scenes": scenes,
         }
         return PlanResult(storyboard=validate(raw, inp), provider=self.name)
@@ -183,12 +202,16 @@ STORYBOARD_TOOL = {
     "input_schema": {
         "type": "object",
         "additionalProperties": False,
-        "required": ["title", "description", "hashtags", "hook", "scenes"],
+        "required": ["title", "description", "hashtags", "hook", "visual_bible", "scenes"],
         "properties": {
             "title": {"type": "string", "description": "YouTube title, max 90 characters, no hashtags"},
             "description": {"type": "string", "description": "YouTube description, 1-3 short sentences"},
             "hashtags": {"type": "array", "items": {"type": "string"}, "description": "3-6 hashtags incl. #shorts"},
             "hook": {"type": "string", "description": "the opening line that stops the scroll"},
+            "visual_bible": {
+                "type": "string",
+                "description": "ENGLISH, 20-50 words: fixed look of the recurring subject and world, empty if none",
+            },
             "scenes": {
                 "type": "array",
                 "description": f"{MIN_SCENES}-{MAX_SCENES} scenes, order 1..n",
@@ -221,6 +244,10 @@ Rules (hard):
 - video_prompt is in ENGLISH for a text-to-video model: vertical 9:16, one continuous shot, concrete subject,
   action, setting, camera move, lighting, the requested visual style. No on-screen text, no logos,
   no real people or brands. 25-70 words.
+- visual_bible (ENGLISH, 20-50 words) fixes what must look identical in every clip: the recurring character
+  (age, build, hair, wardrobe, colours) or object, the setting, palette, lighting and lens. Every video_prompt
+  must begin with the visual_bible verbatim, then describe that scene's action and camera. Use an empty string
+  only when the scenes deliberately share no subject. If a visual bible is given in the request, use it verbatim.
 - Title/description/hashtags in the requested language, ready for YouTube. Include #shorts.
 Answer ONLY by calling the submit_storyboard tool, exactly once. Do not write a plain-text answer."""
 
@@ -390,9 +417,10 @@ class ClaudePlanner(ClaudeToolClient):
             wps=WORDS_PER_SECOND[inp.language],
         )
         lang = "Vietnamese" if inp.language == "vi" else "English"
+        bible = f"Visual bible (use verbatim): {inp.visual_bible}\n" if inp.visual_bible else ""
         user = (
             f"Topic: {inp.topic}\nLanguage: {lang}\nTotal duration: {inp.target_duration}s "
-            f"(suggested {len(targets)} scenes of ~{targets[0]}s)\nVisual style: {inp.visual_style}\n\n"
+            f"(suggested {len(targets)} scenes of ~{targets[0]}s)\nVisual style: {inp.visual_style}\n{bible}\n"
             f"{brief_prompt(inp.brief)}"
             "Answer by calling the submit_storyboard tool with the finished storyboard."
         )
